@@ -120,6 +120,12 @@ PeerOrgs:
 
 ```yaml
 ---
+# Copyright IBM Corp. All Rights Reserved.
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+
+---
 ################################################################################
 #
 #   Profile
@@ -128,33 +134,51 @@ PeerOrgs:
 #   as parameters to the configtxgen tool
 #
 ################################################################################
-
-# 在这里不同的 profile 可以让 configtxgen 作为命令行参数来读取
 Profiles:
-    # 这就是 profile 的名字
-    # 针对创世区块的 profile
+    # 这个 profile 是用来定义 consortium 的。远在产生频道以前，就定义 orderer 和组织之间的关系。
     TwoOrgsOrdererGenesis:
         Orderer:
-            # 按照 YAML 的语法，这是对 anchor 的引用
+            # 按照 YAML 的语法，<<: * 是对 anchor 的引用
             <<: *OrdererDefaults
             Organizations:
-                # 这里引用了下面的 &OrdererOrg
                 - *OrdererOrg
         Consortiums:
+            # 这个名称似乎是默认的样例联盟，在没有联盟的时候会被拿出来用
             SampleConsortium:
                 Organizations:
-                    # 这里引用了下面的 &Org1
                     - *Org1
                     - *Org2
-    # 针对 channel 的 profile
+    # 这两个 profile 则是产生频道用的。换言之，一套 orderer 和多个组织，可以产生多个 consortium。
     TwoOrgsChannel:
-        # 引用了同一个联盟
         Consortium: SampleConsortium
         Application:
             <<: *ApplicationDefaults
             Organizations:
                 - *Org1
                 - *Org2
+
+    # 因为增加了 profile，所以要去改使用 profile 的地方。
+    ThreeOrgsOrdererGenesis:
+        Orderer:
+            # 按照 YAML 的语法，这是对 anchor 的引用
+            <<: *OrdererDefaults
+            Organizations:
+                - *OrdererOrg
+        Consortiums:
+            # 这里换了一个联盟来跑这个 network。
+            BusinessConsortium:
+                Organizations:
+                    - *Org1
+                    - *Org2
+                    - *Org3
+    ThreeOrgsChannel:
+        Consortium: BusinessConsortium
+        Application:
+            <<: *ApplicationDefaults
+            Organizations:
+                - *Org1
+                - *Org2
+                - *Org3 
 
 ################################################################################
 #
@@ -176,9 +200,8 @@ Organizations:
         # ID to load the MSP definition as
         ID: OrdererMSP
 
-        # 这里差不多是硬编码了这个组织的 MSP 目录。
         # MSPDir is the filesystem path which contains the MSP configuration
-        MSPDir: crypto-config/ordererOrganizations/example.com/msp
+        MSPDir: crypto-config/ordererOrganizations/ORDERER_DOMAIN/msp
 
     - &Org1
         # DefaultOrg defines the organization which is used in the sampleconfig
@@ -186,16 +209,15 @@ Organizations:
         Name: Org1MSP
 
         # ID to load the MSP definition as
-        # 对比上下两个组织，name 可以和 id 一样，也可以和 id 不一样。
         ID: Org1MSP
 
-        MSPDir: crypto-config/peerOrganizations/org1.example.com/msp
+        MSPDir: crypto-config/peerOrganizations/ORG1_DOMAIN/msp
 
         AnchorPeers:
             # AnchorPeers defines the location of peers which can be used
             # for cross org gossip communication.  Note, this value is only
             # encoded in the genesis block in the Application section context
-            - Host: peer0.org1.example.com
+            - Host: peer0.ORG1_DOMAIN
               Port: 7051
 
     - &Org2
@@ -206,13 +228,24 @@ Organizations:
         # ID to load the MSP definition as
         ID: Org2MSP
 
-        MSPDir: crypto-config/peerOrganizations/org2.example.com/msp
+        MSPDir: crypto-config/peerOrganizations/ORG2_DOMAIN/msp
 
         AnchorPeers:
             # AnchorPeers defines the location of peers which can be used
             # for cross org gossip communication.  Note, this value is only
             # encoded in the genesis block in the Application section context
-            - Host: peer0.org2.example.com
+            - Host: peer0.ORG2_DOMAIN
+              Port: 7051
+
+    - &Org3
+        # 这个组织 name取什么名字，完全无碍于MSP ID。但会影响 configtxgen 的 -asOrg 参数，进而影响 anchor 节点 configtx 的生成。
+        Name: Org3MSP
+        # 这里这个 MSP ID 完全可以不按照惯例来，也完全不影响整个网络的启动，也完全不受 crypto-config.yaml 的配置文件影响。
+        ID: Org3-MSP
+        MSPDir: crypto-config/peerOrganizations/ORG3_DOMAIN/msp
+        # 锚节点可以是数组 
+        AnchorPeers:
+            - Host: peer0.ORG3_DOMAIN
               Port: 7051
 
 ################################################################################
@@ -231,7 +264,7 @@ Orderer: &OrdererDefaults
     OrdererType: solo
 
     Addresses:
-        - orderer.example.com:7050
+        - orderer.ORDERER_DOMAIN:7050
 
     # Batch Timeout: The amount of time to wait before creating a batch
     BatchTimeout: 2s
