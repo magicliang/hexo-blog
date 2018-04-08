@@ -20,7 +20,7 @@ x.509 的根证书是`ca-cert`。它把 peers 和 orderers 绑定到一个 Org �
 #
 # SPDX-License-Identifier: Apache-2.0
 #
-
+# 注意这个文件里一点指定 MSP 的 ID 的地方都没有。
 # ---------------------------------------------------------------------------
 # "OrdererOrgs" - Definition of organizations managing orderer nodes
 # ---------------------------------------------------------------------------
@@ -109,7 +109,6 @@ PeerOrgs:
       Count: 2
     Users:
       Count: 1
-
 ```
 
 跑完这个工具生成的材料都在`crypto-config`这个文件夹下，它总会归属于 ordererOrganzations 和 peerOrganizations。这两个文件夹下的子文件夹就是由拓扑决定的几个域文件夹。每个域下必有 ca、msp、peers/orderers、tlsca 和 users 五个文件夹。每个user，peer和orderer还必然有自己的MSP。
@@ -119,7 +118,6 @@ PeerOrgs:
 `configtxgen`需要使用的配置文件是`configtx.yaml`，解说文件大致如下：
 
 ```yaml
----
 # Copyright IBM Corp. All Rights Reserved.
 #
 # SPDX-License-Identifier: Apache-2.0
