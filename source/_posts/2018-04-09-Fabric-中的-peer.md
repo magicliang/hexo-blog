@@ -5,7 +5,7 @@ tags:
 - Hyperledger Fabric
 - 区块链
 ---
-每个 peer 可以拥有若干个 chaincode，也可以拥有若干个 ledger，但并不是一开始就拥有的，而是逐渐被创建出来的。chaincode 一定会定义一个 asset，也就生成了 ledger。一个peer 可以拥有 ledger 而无 chaincode，可见也并不是必然由 chaincode 生成 ledger。比如同一个组织里面多个 peer，只有一个安装了 chaincode，其它的peer一样可以拿到 ledger。
+每个 peer 可以拥有若干个 chaincode，也可以拥有若干个 ledger，但并不是一开始就拥有的，而是逐渐被创建出来的。chaincode 一定会定义一个 asset，也就生成了 ledger。一个peer 可以拥有 ledger 而无 chaincode，可见也并不是必然由 chaincode 生成 ledger。比如同一个组织里面多个 peer，只有一个安装了 chaincode（只有这个 peer 可以当作 endorser），其它的peer一样可以拿到 ledger。
 
 peer 的流程架构图大致上是：
 
