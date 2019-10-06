@@ -344,10 +344,73 @@ HyperLogLog 具有以下特点：
 
 # 发布（publish）/订阅（subscribe）
 
-
+在老版本的 Redis 里，开发者可以通过 list 这一数据结构来模拟消息队列中间件，但后来 Redis 提供了发布订阅功能。这一功能清晰地解耦了发布者和订阅者，两者不直接通信，发布者客户端）向指定的频道（channel）发布消息，订阅改频道的客户端都可以收到该消息。
 
 ```bash
+# 发布端发送消息，返回值就是收到消息的客户端的数量。
+publish channel:sports "tom won the message"
+
+# 接收端接收消息。这个订阅是在不断 polling 的过程
+subscribe channel:sports
+
+# 取消订阅
+unsubscribe channel:sports
+
+# 按照 glob 风格进行订阅（只有订阅，不能发布）
+psubscribe it*
+
+# 按照 glob 风格取消订阅
+punsubscribe it*
+
+# 查看活跃的频道-至少有一个订阅者的频道
+pubsub channels
+
+# 查看特定频道的订阅者数量
+pubsub numsub channel:economy
+
+# 查看模式订阅数
+pubsub numpat
 ```
+
+值得注意的亮点分别是：
+
+ 1. 客户端在执行订阅命令后就进入订阅状态，只能接收 subscribe、psubscribe、unsubscribe 和 punscribe 四个命令。
+ 2. 新开启的客户端，无法收到该频道之前的消息，因为 **Redis 不会对发布的消息进行持久化**。--消息既无法堆积（accumulate），也无法回溯（backtrace）。
+
+# GEO（地理信息定位）
+
+Redis 的 GEO 可以用来实现诸如附近位置、摇一摇这类依赖于地理位置信息的功能。
+
+```bash
+# 向地理信息列表里加入北京的经度（longtitude）、纬度（latitude）。这个命令除了添加信息，还能更新老地理信息
+geoadd cities:locations 116.28 39.55 beijing
+geoadd cities:locations 117.12 39.08 tianjin
+
+# 求两个地理位置之间的距离，单位可切换
+geodist cities:locations beijing tianjin km
+
+# 获取以 beijing 为中心150km内的城市，包括北京
+georadiusbymember cities:locations beijing 150 km
+
+
+# 获取特定城市的地理信息
+geopos cities:locations beijing
+
+# zset 地理信息的实际存储类型是有序集合
+type cities:locations
+
+# 没有 geo 开头的命令，只能使用 zset 自带的原生删除命令
+zrem cities:locations beijing
+```
+
+此外还可以对 geo 集合的成员求geohash。
+```bash
+# wx48ypbe2q 
+geohash cities:locations beijing
+```
+
+- geohash 的长度越长，精度越精确。
+- 两个 geohash 越相似，距离越近。
 
 
   [1]: https://s2.ax1x.com/2019/10/05/uy8EPU.png
