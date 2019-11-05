@@ -4,7 +4,6 @@ date: 2019-10-30 22:20:55
 tags:Redis
 
 ---
-
 Redis 有若干套高可用实现方案。2.8 开始提供哨兵功能（不要使用更低版本的哨兵，可能有 bug）。
 
 # 基本概念
@@ -158,6 +157,12 @@ sentinel monitor <master-name> <host> <port> <quorum>
 ## 主观下线和客观下线
 
 ### 主观下线
+
+任意sentinel ping master 超时（sentinel down-after-milliseconds my_redis_master 3000），就可以单节点认为该节点已失败。
+
+### 客观下线
+
+sentinel 一进入主观下线状态，就会发送 sentinel is-master-down-by-addr 命令询问其他哨兵节点**直接询问**它们对主节点的判断，当超过<quorum>的个数，Sentinel 节点认为主节点确实有问题，这时候 Sentinel 就可以客观下线的决定。
 
 [1]: https://s2.ax1x.com/2019/10/19/KmgbkD.png
 [2]: https://s2.ax1x.com/2019/10/19/KmW2tS.jpg
