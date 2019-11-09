@@ -1,7 +1,8 @@
 ---
 title: Redis 笔记之一：Redis 特性
 date: 2019-07-22 23:05:06
-tags:Redis
+tags:
+- Redis
 ---
 # Redis 高性能的原因
 
