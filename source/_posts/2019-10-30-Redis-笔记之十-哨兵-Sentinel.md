@@ -52,6 +52,7 @@ Sentinel 方案是在原生的 Master-Slave 集群之外加上一个 Sentinel �
 # 常见参数有 4 个
 
 # my_redis_master 是主节点的别名，redis1 是主节点的域名，当前 sentinel 起始就要监控一个 redis 节点，意味着 sentinel 的拓扑结构受 redis 集群的拓扑结构影响。3 意味着quorum是 3 ，3个节点认为 master 不可达才形成决议。
+# Redis 集群应该和其他集群一样，尽量设置为大于等于 3 的奇数，兼顾高可用和选举领导的需要
 # 只有集群里的节点达到 max(quorum, num(sentinel)/2 + 1) ，选举才成立。在大多数情况下 quorum = num(sentinel)/2 + 1
 sentinel monitor my_redis_master redis1 6379 3
 # sentinel 会定期发送 ping 到 master（其实也包括所有其他节点），3000 毫秒不回应就意味着不可达
@@ -160,9 +161,70 @@ sentinel monitor <master-name> <host> <port> <quorum>
 
 任意sentinel ping master 超时（sentinel down-after-milliseconds my_redis_master 3000），就可以单节点认为该节点已失败。
 
+任何一个节点进入主观下线状态时，都会使用`new_epoch`让当前纪元加一。
+
 ### 客观下线
 
-sentinel 一进入主观下线状态，就会发送 sentinel is-master-down-by-addr 命令询问其他哨兵节点**直接询问**它们对主节点的判断，当超过<quorum>的个数，Sentinel 节点认为主节点确实有问题，这时候 Sentinel 就可以客观下线的决定。
+sentinel 一进入主观下线状态，就会发送`SENTINEL is-master-down-by-addr <masterip> <masterport> <sentinel.current_epoch> *` 命令**直接询问**其他哨兵节点对主节点的判断，**当主观下线的 哨兵数量超过<quorum>的个数（不一定要超过半数）**，Sentinel 节点认为主节点确实有问题，这时候 Sentinel 就可以客观下线的决定。第一个进入主观下线状态的节点，往往成为进入客观下线的节点-这点特别像 Raft。
+
+![主观下线和客观下线.jpg](主观下线和客观下线.jpg)
+
+runId等于*时，sentinel 交换的是主节点下线的判定；runId 等于哨兵的runId时，哨兵请求的是其他节点同意它成为领导者。
+
+### 客观下线必须举行 Sentinel 节点选举
+
+**主观下线和客观下线本质上只是对 Redis 主节点的一个状态标记，并不会天然将自己标记为领导者，更不会自动故障转移。**
+
+1. 确定进入客观状态的 Sentinel 节点会成为一个 candidate，立刻发送一个`SENTINEL is-master-down-by-addr <masterip> <masterport> <sentinel.current_epoch> 自己的 runid`
+2. 每个 sentinel 节点在收到该命令的后，如果没有同意过其他 Sentinel 节点的 sentinel is-master-down-by-addr 命令，将同意该请求，否则拒绝（**raft 里每个节点每轮选举只能有一票**）。
+3. 发起选举的 Sentinel 要么成为领导者，**要么进入下一轮选举（或者恢复到主观下线以前的状态？）**。
+
+## 故障转移
+
+所有的故障转移其实只是执行命令，把手动步骤编程为自动步骤而已。
+
+具体步骤为：
+
+ - 在从节点列表中选择一个节点作为新的主节点。因为从节点本身是有状态的，所以实际上是使用**综合考虑权重、优先级和一致性的类负载均衡选择算**法：
+  - 过滤不健康节点：主观下线、断线、5s 内没有回复过 Sentinel 的 ping 命令、与主节点失联超过 down-after-miliseconds。
+  - 选择 slave-priority 最高的节点（如何配置？）。
+  - 选择偏移量最大的从节点-复制最完整。
+  - 选择 runid 最小的从节点。
+- 对选出的节点发出 slave of no one 命令，从节点升为主节点。
+- 对剩下的从节点发出命令，让它们成为主节点的从节点，复制规则和 parallel-sync 参数有关。
+- （**最后**）Sentinel 节点集合会将原来主节点更新为从节点，（这样线上先止血成功），然后持续对其关注，待其恢复后命令其去复制新的主节点。
+
+## 全流程
+
+!(redis 客观下线流程.png)[redis 客观下线流程.png]
+
+# 节点运维
+
+## 节点下线
+
+- 临时下线：暂时将节点关掉，之后还会重新启动，继续提供服务。
+- 永久下线：将节点关掉不再使用，需要做一些清理工作，如删除配置文件，持久化文件、日志文件。
+
+### 主节点下线
+
+1. 将一个合适的从节点（如高性能）的 priority 设置为 0，
+2. 在任意一个 sentinel 上，执行`sentinel failover master-name`。
+
+### 从节点或 sentinel 节点下线
+
+如果使用了读写分离，要确保读写分离机制能够自动感知拓扑结构的变化。
+如果只是临时下线（命令下线、kill），sentinel 会对下线节点念念不忘，也就是会不断地对这些节点进行 monitor，浪费硬盘和网络资源，这种时候可以考虑永久下线。
+
+## 节点上线
+
+### 从节点上线
+
+配置节点 slave of [masterIp] [masterPort] 让节点上线。master 收到链接后，主从就会自动相互注册发现，而 sentinel 也会自动发现新的从节点。 
+
+### Sentinel 节点上线
+
+sentinel 只要配了 sentinel monitor，它就会连上 master，进而被 sentinel 网络互相理解发现。
+
 
 [1]: https://s2.ax1x.com/2019/10/19/KmgbkD.png
 [2]: https://s2.ax1x.com/2019/10/19/KmW2tS.jpg
