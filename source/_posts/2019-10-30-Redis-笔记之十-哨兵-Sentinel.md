@@ -207,7 +207,8 @@ runId等于*时，sentinel 交换的是主节点下线的判定；runId 等于�
 
 ### 主节点下线
 
-1. 将一个合适的从节点（如高性能）的 priority 设置为 0，
+1. 将一个合适的从节点（如高性能）的 priority 设置为 0。可参考 [sentinel][4] 中的 Replicas priority section。
+
 2. 在任意一个 sentinel 上，执行`sentinel failover master-name`。
 
 ### 从节点或 sentinel 节点下线
@@ -225,8 +226,8 @@ runId等于*时，sentinel 交换的是主节点下线的判定；runId 等于�
 
 sentinel 只要配了 sentinel monitor，它就会连上 master，进而被 sentinel 网络互相理解发现。
 
-
-[1]: https://s2.ax1x.com/2019/10/19/KmgbkD.png
-[2]: https://s2.ax1x.com/2019/10/19/KmW2tS.jpg
-[3]: https://s2.ax1x.com/2019/10/27/KysZ79.png
+  [1]: https://s2.ax1x.com/2019/10/19/KmgbkD.png
+  [2]: https://s2.ax1x.com/2019/10/19/KmW2tS.jpg
+  [3]: https://s2.ax1x.com/2019/10/27/KysZ79.png
+  [4]: https://redis.io/topics/sentinel
 
