@@ -1,8 +1,8 @@
 ---
 title: Redis 笔记之十-哨兵 Sentinel
 date: 2019-10-30 22:20:55
-tags:Redis
-
+tags:
+- Redis
 ---
 Redis 有若干套高可用实现方案。2.8 开始提供哨兵功能（不要使用更低版本的哨兵，可能有 bug）。
 
