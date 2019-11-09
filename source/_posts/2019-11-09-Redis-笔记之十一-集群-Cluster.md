@@ -47,8 +47,49 @@ Redis Cluster 的出现，极大地降低了架构师的负担，解放了生产
 
 ## Redis 数据分区
 
-slot = crc16(key) * 16383 - 注意这种取余的方法
+slot = crc16(key) * 16383 
+
+注意：
+- crc16 是一种哈希函数
+- 用 * 取余的方法
 
 每个节点负责维护一部分槽以及槽锁映射的键值数据。
 
 ![Redis Cluster 的槽位映射.jpg](Redis Cluster 的槽位映射.jpg)
+
+Redis 虚拟槽分区的特点：
+
+- 解耦数据和几点之间的关系，简化了节点扩容和收缩难度。
+- 节点自身维护槽的映射关系，不需要客户端或者代理服务维护槽分区元数据。
+- 支持节点、槽、键之间的映射查询，用于数据路由、在线伸缩等场景。
+
+## Redis 数据分区限制
+
+1. 只允许对映射到同一个 slot 的 key 进行批量操作，如 mget、mset。
+2. 只支持对映射到同一个 node 的 key 进行事务操作。
+3. 大数据结构（hash/list）必须映射到同一节点（key 在最小的可分割单位）。
+4. 不支持多数据空间，只能使用 db0。有了 Redis Cluster，会推动多数据空间消亡。
+5. 复制结构只支持一层，从节点只能复制主节点。
+
+# 搭建集群
+
+## 准备节点
+
+Redis Cluster 至少需要 6 个节点。
+开启配置`redis-enabled yes`。
+
+准备配置文件：
+
+```bash
+daemonize yes #开启后台运行
+port 8001 #工作端口
+bind 172.16.0.15 #绑定机器的内网IP,一定要设置呀老铁，不要用127.0.0.1
+dir /usr/local/redis-cluster/8001/ #指定工作目录，rdb,aof持久化文件将会放在该目录下，不同实例一定要配置不同的工作目录
+cluster-enabled yes #启用集群模式
+cluster-config-file nodes-8001.conf #生成的集群配置文件名称，集群搭建成功后会自动生成，在工作目录下
+cluster-node-timeout 5000 #节点宕机发现时间，可以理解为主节点宕机后从节点升级为主节点时间
+appendonly yes #开启AOF模式
+pidfile /var/run/redis_8001.pid #pid file所在目录
+```
+
+
