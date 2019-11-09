@@ -138,6 +138,9 @@ sentinel monitor <master-name> <host> <port> <quorum>
 
 # 实现原理
 
+![Sentinel故障转移的原理.png](Sentinel故障转移的原理.png)
+[Sentinel故障转移的原理.xmind](Sentinel故障转移的原理.xmind)
+
 ## 三个定时任务
 
 - 每隔 10s，sentinel 往所有 M/S 发 info 获取最新的拓扑结构
