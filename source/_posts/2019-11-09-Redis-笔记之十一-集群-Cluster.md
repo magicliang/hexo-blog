@@ -91,5 +91,14 @@ cluster-node-timeout 5000 #节点宕机发现时间，可以理解为主节点�
 appendonly yes #开启AOF模式
 pidfile /var/run/redis_8001.pid #pid file所在目录
 ```
+要特别注意：
+- dir、log 等目录一定要可写。
+- cluster-config-file 是会被自动生成的，类似 sentinel 会覆写 sentinel 节点的配置文件。
 
+## 节点握手
+
+广播协议。
+共识协议。
+发布订阅。
+流言协议。
 
