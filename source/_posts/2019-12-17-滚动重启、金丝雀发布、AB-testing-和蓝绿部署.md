@@ -44,14 +44,13 @@ rolling restart 会让新旧版本在环境里长时间共存，逐一使节点�
 
 # 特性开关
 
-特性开关的细节可以参考[Feature Toggles (aka Feature Flags)][4]。
+特性开关的细节可以参考[Feature Toggles (aka Feature Flags)][4]，不同的开关实际上体现的是不同的精细化程度。
 
 特性开关的要点是解耦 decision point 和 decision 决策逻辑。
 
 维护这些开关的长期性和动态性实际上需要很重的架构权衡。
 
 ![此处输入图片的描述][5]
-
 
   [1]: https://dev.to/mostlyjason/intro-to-deployment-strategies-blue-green-canary-and-more-3a3
   [2]: https://martinfowler.com/bliki/ParallelChange.html
