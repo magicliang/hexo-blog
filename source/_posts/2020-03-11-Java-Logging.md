@@ -14,6 +14,7 @@ tags:
 log facade（定义 interface）-> log implementation
 
 ![日志环.jpeg](日志环.jpeg)
+![log桥接.png](log桥接.png)
 
 ## JCL 
 
