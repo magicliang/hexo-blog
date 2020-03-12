@@ -5,17 +5,31 @@ tags:
 - Java
 - Logging
 ---
+# log 历史                                            -> 
+
+|阶段|阶段|阶段|阶段|阶段|
+|:-:|:-:|:-:|:-:|:-:|
+|log4j||apache commons logging（JCL）||log4j2|
+||JUL||||
+||simple log||||
+||||logback + slf4j|
+
+多个项目使用不同的 logging 库 + 传递依赖等于依赖管理不规范，日志库泛滥以至互斥。
+                                                        
 # 具体框架与门面
 
 所谓的日志框架，指的是日志输出的具体实现，常见的日志框架包括但不仅限于 JUL（Java Util Logging）、Log4j、Log4j2 和 Logback。这些框架的功能不尽相同，比如有些框架支持友好地打印异常，有些不支持，有些框架不支持，不同的框架的日志级别也各有差异。
 
-因此，诞生了日志门面。所谓的门面，就是“使用一个中间层解耦”这一具体思想的应用。使用了门面，可以屏蔽日志使用者对于具体差异的依赖，既让代码变得整洁，而且可以简单地切换实现而不需要修改代码。
+因此，诞生了日志门面。所谓的门面，就是“使用一个中间层解耦”这一具体思想的应用。使用了门面，可以屏蔽日志使用者对于具体差异的依赖，既让代码变得整洁，而且可以简单地切换实现而不需要修改代码。**没有日志门面，不足以统一日志框架的使用。**
 
-log facade（定义 interface）-> log implementation
+log facade（定义 interface，早期的 JCL 时代，facade 也被叫做接口）-> log implementation
 
 ![日志环.jpeg](日志环.jpeg)
+
 ![log桥接.png](log桥接.png)
 
+![log桥接2.png](log桥接2.png)
+最上层表示桥阶层，下层表示具体的实现层，中间是接口层，可以看出这个图中所有的jar都是围绕着slf4j-api活动的
 ## JCL 
 
 JCL 全称 Jakarta Commons Logging。由于历史原因，Spring最开始在core包中引入的是commons-logging（JCL标准实现）的日志系统，官方考虑到兼容问题，在后续的Spring版本中并未予以替换，而是继续沿用。如果考虑到性能、效率，**应该**自行进行替换，在项目中明确指定使用的日志框架，从而在编译时就指定日志框架。
@@ -101,7 +115,7 @@ common-logging通过动态查找的机制，在程序运行时自动找出真正
 
 ## SLF4J
 
-类似于Apache Common-Logging，是对不同日志框架提供的一个门面封装，**可以在部署的时候不修改任何配置即可接入一种日志实现方案。但是，他在编译时静态绑定真正的Log库。**
+类似于Apache Common-Logging，是对不同日志框架提供的一个门面封装，**可以在部署的时候不修改任何配置即可接入一种日志实现方案。但是，他在编译时静态绑定真正的Log库。** slf4j-api 会去调用StaticLoggerBinder这个类获取绑定的工厂类，而每个日志实现会在自己的jar中提供这样一个类，这样slf4j-api就实现了编译时绑定实现。
 
 ```java
 import org.slf4j.Logger;
@@ -184,7 +198,11 @@ Log4j2 也做了 Facade/Implementation 分离的设计，分成了 log4j-api 和
 1. [《java日志组件介绍（common-logging，log4j，slf4j，logback ）》][1]
 2. [《Spring 切换日志系统》][2]
 3. [《Java 日志框架解析(上) - 历史演进》][3]
+4. [《java日志系统详解》][4]
+5. [《Bridging legacy APIs》][5]
 
   [1]: https://blog.csdn.net/yycdaizi/article/details/8276265
   [2]: https://blog.csdn.net/koflance/article/details/54424783
   [3]: https://zhuanlan.zhihu.com/p/24272450
+  [4]: https://www.iteye.com/blog/ieye-1924215
+  [5]: http://www.slf4j.org/legacy.html
