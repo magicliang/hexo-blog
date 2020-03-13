@@ -12,7 +12,7 @@ tags:
 |log4j||apache commons logging（JCL）||log4j2|
 ||JUL||||
 ||simple log||||
-||||logback + slf4j|
+||||logback + slf4j||
 
 多个项目使用不同的 logging 库 + 传递依赖等于依赖管理不规范，日志库泛滥以至互斥。
                                                         
