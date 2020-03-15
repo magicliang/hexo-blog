@@ -294,6 +294,15 @@ navigableMap.put("b", "2");
 Map.Entry last = original.pollLastEntry();
 ```
 
+## AbstractList 
+
+它的迭代器是不可变的 ListIterator, 只有 hasNext()，hasPrevious()，next()， previous()， 还有几个获取位置的方法 - 没有增删改查的操作。
+
+## AbstractSequentialList
+
+抽象线性表，就是数据结构里的线性表，是顺序表和链表的基类型，但在 Java 里只是 LinkedList。
+
+它的迭代器在 ListIterator 基础上增加了，add、remove 等操作。
 
   [1]: https://www.codejava.net/java-core/collections/overview-of-java-collections-framework-api-uml-diagram
   [2]: http://www.falkhausen.de/Java-8/java.util/Collection-Hierarchy.html
