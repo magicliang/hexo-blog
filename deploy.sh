@@ -2,6 +2,8 @@
 
 git pull
 
+
+
 # 以后用post文件夹来存储附件
 # ./delete_all_post_folders.sh
 
