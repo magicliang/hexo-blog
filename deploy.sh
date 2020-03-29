@@ -7,22 +7,26 @@ git pull
 
 echo "begin to scan sensitive contents:"
 
-for i in {1..30}
+for i in {1..10}
 do
     echo ""
 done
 
 grep -rn --color "\.sankuai\.\|\.meituan\." ./source/_posts
 
-for i in {1..30}
+for i in {1..10}
  do
      echo ""
 done
 
-#if echo "$OUTPUT" | grep -q "(Status:\s200)"; then
-#    echo "MATCH"
-#fi
-
+read -p "Continue? type n to stop, otherwise continue " -n 1 -r
+echo    # (optional) move to a new line
+if [[ $REPLY =~ ^[Nn]$ ]]
+then
+    # 直接退出
+    echo "byebye"
+    exit 0
+fi
 
 # 在部署前先清理旧文件
 hexo clean
