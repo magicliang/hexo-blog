@@ -6,17 +6,14 @@ git pull
 # ./delete_all_post_folders.sh
 
 echo "begin to scan sensitive contents:"
-echo ""
-echo ""
-echo ""
-echo ""
-echo ""
+
+for i in {1..5}
+do
+    echo "\n"
+done
+
 grep -rn --color "\.sankuai\.\|\.meituan\." ./source/_posts
-echo ""
-echo ""
-echo ""
-echo ""
-echo ""
+
 #if echo "$OUTPUT" | grep -q "(Status:\s200)"; then
 #    echo "MATCH"
 #fi
