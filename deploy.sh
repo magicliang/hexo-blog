@@ -7,12 +7,17 @@ git pull
 
 echo "begin to scan sensitive contents:"
 
-for i in {1..5}
+for i in {1..30}
 do
-    echo "\n"
+    echo ""
 done
 
 grep -rn --color "\.sankuai\.\|\.meituan\." ./source/_posts
+
+for i in {1..30}
+ do
+     echo ""
+done
 
 #if echo "$OUTPUT" | grep -q "(Status:\s200)"; then
 #    echo "MATCH"
