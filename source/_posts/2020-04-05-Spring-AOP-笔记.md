@@ -28,15 +28,13 @@ Weaving: linking aspects with other application types or objects to create an ad
 
 可以看出 Spring 的设计里面是尽可能地在 IOC 的基础上提供强大的`auto-proxying`服务，所有的增强功能，都是在代理里实现的，已解决企业级开发中常见的问题，而不是提供强大而完备的 AOP 实现（尽管它已经很强大了）。
 
+所有声明、配置（不管是注解还是 xml 配置），advisor、Interceptor、proxies 可以混合使用，即 Mixing Aspect Types。
+
 # 到底应该使用哪种代理呢？
 
 Spring 默认使用 Java 动态代理，任何接口实现都可以被代理。但这种代理只能拦截接口方法。最终产生的 object 是 Proxy 的 instance 且 Interface 的 implementation。
 
 当一个对象没有实现一个接口的时候，Spring 会退而求其次，使用 cglib 代理。当然，我们也可以（实际上经常）[强制使用 cglib 代理][1]。这种代理可以拦截一切可以覆写的方法。最终产生的 object 是原类型的 subclass 的 instance。
-
-# Spring 的 AOP 实现基础策略
-
-所有声明、配置，advisor、Interceptor、proxies 可以混合使用，即 Mixing Aspect Types。
 
 It is perfectly possible to mix @AspectJ style aspects by using the auto-proxying support, schema-defined <aop:aspect> aspects, <aop:advisor> declared advisors, and even proxies and interceptors in other styles in the same configuration. All of these are implemented by using the same underlying support mechanism and can co-exist without any difficulty.
 
@@ -61,7 +59,7 @@ public class AppConfig {
 <aop:aspectj-autoproxy/>
 ```
 
-## 声明 Aspect
+### 声明 Aspect
 
 ```java
 package org.xyz;
@@ -102,7 +100,7 @@ Spring AOP （proxy-based）的切点里 this 总是指代理，而 target 指�
 
 Spring AOP 里的 join point 专指 method execution，其他 AOP 框架不只是拦截方法执行。
 
-## 详解 pointcut
+### 详解 pointcut
 
 切点有自己的 PCD（pointcut designators ），来自于  pointcut expressions（主要来自于 AspectJ），完整的表达式语法见[《Appendix B. Language Semantics》][4]：
 
@@ -346,9 +344,9 @@ Any join point (method execution only in Spring AOP) which takes a single parame
  within(com.bigboxco..*) && execution(public * *(..))
 ```
 
-## 详解 advice
+### 详解 advice
 
-### advice 的类型
+#### advice 的类型
 
 Advice 可以分为：
 
@@ -478,11 +476,54 @@ public class AspectJAnnotationArgsBrowserAroundAdvice {
  
 我们通常会使用 around，但 Spring 推荐尽量用 less powerful 的 advice 以避免出错。
 
-### advice 的优先级
+#### advice 的优先级
 
 有最高优先级的 advice 在 advice 嵌套的最外层，before 最先执行而 after 最后执行。
 
 可以通过实现 org.springframework.core.Ordered 或者使用 Order 注解给 Aspect - advice 的优先级跟着 aspect 的优先级走。
+
+### 详解 introduction
+
+对于 this proxy 而言，introduction 引入了混型（mixin）；而对于调用者而言，这个新的 proxy 实际上是个 adapter。
+
+```java
+@Aspect
+public class UsageTracking {
+    
+    // 解耦设计 1：符合这个 pattern 的 bean  的 proxy（不是 bean 本身），都会被默认实现这个接口 UsageTracked，且带有一个默认实现 DefaultUsageTracked。
+    @DeclareParents(value="com.xzy.myapp.service.*+", defaultImpl=DefaultUsageTracked.class)
+    public static UsageTracked mixin;
+
+    // 解耦设计 2：凡是 proxy 本身带有这个接口 usageTracked 实现，则进行调用。
+    @Before("com.xyz.myapp.SystemArchitecture.businessService() && this(usageTracked)")
+    public void recordUsage(UsageTracked usageTracked) {
+        usageTracked.incrementUseCount();
+    }
+}
+
+// 解耦设计 3：直接用 context getBean
+UsageTracked usageTracked = (UsageTracked) context.getBean("myService");
+```
+
+###  高级主题 - AOP （其他）初始化模型
+
+缺省的情况下，全局只有一个单例 aspect， AOP 把它称作“singleton instantiation model”。
+
+```java
+@Aspect("perthis(com.xyz.myapp.SystemArchitecture.businessService())")
+public class MyAspect {
+
+    private int someState;
+
+    @Before(com.xyz.myapp.SystemArchitecture.businessService())
+    public void recordServiceUsage() {
+        // ...
+    }
+
+}
+```
+
+这样的设计允许某些局部状态被限定起来，不再是全局共享。现实中并不太实用 - TransactionInterceptor 本身管理复杂的事务和连接，它却是靠 threadlocal 实现的，并没有依靠多个拦截器。
 
 ## 激活 schema-based approach
 
@@ -508,7 +549,6 @@ public class AspectJAnnotationArgsBrowserAroundAdvice {
 ```
 
 advisor 适用于内部的 advice，普通的 advice 应该使用 aspect。
-
 
 # 一般的继承关系
 
@@ -665,7 +705,6 @@ joinpoit - Spring 自己的方法闭包执行点
 参考：
 
 1. [《Introduction to Pointcut Expressions in Spring》][7]
-
 
   [1]: https://docs.spring.io/spring/docs/current/spring-framework-reference/core.html#aop-proxying
   [2]: https://docs.spring.io/spring/docs/current/spring-framework-reference/core.html#aop-ataspectj
