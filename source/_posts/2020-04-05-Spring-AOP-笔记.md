@@ -13,7 +13,7 @@ Join point: A point during the execution of a program, such as the execution of 
 
 Advice: Action taken by an aspect at a particular join point. 方面针对结合点采取的**行动**。对 Advice 而言，join point 经常是他们的参数（至少 Advice 对应的 Interceptor 里包装了这些参数）。
 
-Pointcut: A predicate that matches join points. Advice is associated with a pointcut expression and runs at any join point matched by the pointcut (for example, the execution of a method with a certain name). The concept of join points as matched by pointcut expressions is central to AOP, and Spring uses the AspectJ pointcut expression language by default. 切点（英文是点切）实际上是对 Join point 进行判定的谓词。**切点把 Join point 和 Advice 实际上结合起来了**。默认的 切点表达式来自于 AspectJ pointcut expression。
+Pointcut: A predicate that matches join points. Advice is associated with a pointcut expression and runs at any join point matched by the pointcut (for example, the execution of a method with a certain name). The concept of join points as matched by pointcut expressions is central to AOP, and Spring uses the AspectJ pointcut expression language by default. 切点（英文是点切）实际上是对 Join point 进行判定的谓词。**切点把 Join point 和 Advice 实际上结合起来了**。默认的切点表达式来自于 AspectJ pointcut expression。
 
 Advisor：Base interface holding AOP advice (action to take at a joinpoint) and a filter determining the applicability of the advice (such as a pointcut). This interface is not for use by Spring users, but to allow for commonality in support for different types of advice.
 Spring AOP is based around around advice delivered via method interception, compliant with the AOP Alliance interception API. The Advisor interface allows support for different types of advice, such as before and after advice, which need not be implemented using interception. Advisor 不是给 Spring 用户用的。它包含一个 advice，是 一个 advice 的容器 - 相应地，Aspect 是包含很多 advice 的容器，这是个 Spring 用户用的。
@@ -187,11 +187,11 @@ public void logMethod(JoinPoint jp) {
 }
 ```
 
--  bean 特定的 bean 名称/名称模式引用的 
+-  bean 特定的 bean 名称/名称模式引用的，类似` BeanNameAutoProxyCreator`。
 
 ```java
-bean(tradeService)
-bean(*Service)
+@Pointcut("bean(tradeService)")
+@Pointcut("bean(*Service)")
 ```
 
 更多例子：
@@ -494,7 +494,7 @@ public class UsageTracking {
     @DeclareParents(value="com.xzy.myapp.service.*+", defaultImpl=DefaultUsageTracked.class)
     public static UsageTracked mixin;
 
-    // 解耦设计 2：凡是 proxy 本身带有这个接口 usageTracked 实现，则进行调用。
+    // 解耦设计 2：凡是 proxy 本身带有这个接口 usageTracked 实现，则进行调用。而且这里把 usageTracked 赋值成一个方法参数
     @Before("com.xyz.myapp.SystemArchitecture.businessService() && this(usageTracked)")
     public void recordUsage(UsageTracked usageTracked) {
         usageTracked.incrementUseCount();
@@ -529,9 +529,9 @@ public class MyAspect {
 
 解析 xml 标签的模式，被 Spring 称为 [schema-based approach][5] 。
 
-这种解决方案的表达能力不如基于注解的表达能力强（**有些切点表达式可以用注解表达，无法用 xml 表达**）。
+这种解决方案的表达能力不如基于注解的表达能力强（**有些切点表达式可以用注解表达，无法用 xml 表达**，，比如 xml 可以表达 id pointcut，却无法表达由 named pointcut 组成的 composited pointcut）。
 
-它基于 [aop schema][6]，需要使用的时候引入一个 schema：
+它基于**新增加**的 [aop schema][6]，需要使用的时候引入一个 schema：
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
@@ -542,11 +542,48 @@ public class MyAspect {
     xsi:schemaLocation="
         http://www.springframework.org/schema/beans https://www.springframework.org/schema/beans/spring-beans.xsd
         http://www.springframework.org/schema/aop https://www.springframework.org/schema/aop/spring-aop.xsd">
+    
+    <!-- 可以存在多个 <aop:config/> -->
+    <aop:config>
+    <!-- 可以放 pointcut、aspect 和 advisor -->
+    <aop:aspect id="myAspect" ref="aBean">
+    </aop:aspect>
+     <aop:pointcut id="businessService"
+        expression="execution(* com.xyz.myapp.service.*.*(..))"/>
+        <!-- 这个类里有好几个 pointcut 表达式 -->
+        <aop:pointcut id="businessService"
+        expression="com.xyz.myapp.SystemArchitecture.businessService()"/>
+        <aop:aspect id="myAspect" ref="aBean">
+            <!-- 在标记语言里面慎用 && -->
+            <aop:pointcut id="businessService"
+            expression="execution(* com.xyz.myapp.service.*.*(..)) and this(service)"/>
+            <!-- before advice pointcut 的 service 参数会赋给 monitor -->
+            <aop:before pointcut-ref="businessService" method="monitor"/>
+            <!-- 指定返回参数 -->
+            <aop:after-returning
+                pointcut-ref="dataAccessOperation"
+                returning="retVal"
+                method="doAccessCheck"/>
+        
+            <!-- 指定抛出异常 -->
+            <aop:after-throwing
+                pointcut-ref="dataAccessOperation"
+                throwing="dataAccessEx"
+                method="doRecoveryActions"/>
+        
+            <!-- 无参数的 after -->
+            <aop:after
+                pointcut-ref="dataAccessOperation"
+                method="doReleaseLock"/>
 
-    <!-- bean definitions here -->
-
+        </aop:aspect>
+    </aop:config>
+    
+    <bean id="aBean" class="...">
 </beans>
 ```
+
+注意：这个`<aop:config/>`依赖于[auto-proxying][7]机制，因而与`AutoProxyCreator`如`BeanNameAutoProxyCreator`是相互冲突的，所以两者不要混用-与 Mixing Aspect Types 的观点稍微有点冲突。
 
 advisor 适用于内部的 advice，普通的 advice 应该使用 aspect。
 
@@ -704,7 +741,8 @@ joinpoit - Spring 自己的方法闭包执行点
 
 参考：
 
-1. [《Introduction to Pointcut Expressions in Spring》][7]
+1. [《Introduction to Pointcut Expressions in Spring》][8]
+
 
   [1]: https://docs.spring.io/spring/docs/current/spring-framework-reference/core.html#aop-proxying
   [2]: https://docs.spring.io/spring/docs/current/spring-framework-reference/core.html#aop-ataspectj
@@ -712,4 +750,5 @@ joinpoit - Spring 自己的方法闭包执行点
   [4]: https://www.eclipse.org/aspectj/doc/released/progguide/semantics-pointcuts.html
   [5]: https://docs.spring.io/spring/docs/current/spring-framework-reference/core.html#aop-schema
   [6]: https://docs.spring.io/spring/docs/current/spring-framework-reference/core.html#xsd-schemas-aop
-  [7]: https://www.baeldung.com/spring-aop-pointcut-tutorial#3-this-and-target
+  [7]: https://docs.spring.io/spring/docs/current/spring-framework-reference/core.html#aop-autoproxy
+  [8]: https://www.baeldung.com/spring-aop-pointcut-tutorial#3-this-and-target
