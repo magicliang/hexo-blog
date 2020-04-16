@@ -28,7 +28,7 @@ Weaving: linking aspects with other application types or objects to create an ad
 
 可以看出 Spring 的设计里面是尽可能地在 IOC 的基础上提供强大的`auto-proxying`服务，所有的增强功能，都是在代理里实现的，已解决企业级开发中常见的问题，而不是提供强大而完备的 AOP 实现（尽管它已经很强大了）。
 
-所有声明、配置（不管是注解还是 xml 配置），advisor、Interceptor、proxies 可以混合使用，即 Mixing Aspect Types。
+所有声明、配置（不管是注解还是 xml 配置）：aspect、advice、pointcut、advisor、自己实现的 Interceptor、其他 proxies 可以混合使用，即 Mixing Aspect Types。
 
 # 到底应该使用哪种代理呢？
 
@@ -185,6 +185,15 @@ public void logMethod(JoinPoint jp) {
     String methodName = jp.getSignature().getName();
     logger.info("Executing method: " + methodName);
 }
+
+@Retention(RetentionPolicy.RUNTIME)
+public @interface Idempotent {
+    // marker annotation
+}
+
+<aop:pointcut id="idempotentOperation"
+        expression="execution(* com.xyz.myapp.service.*.*(..)) and
+        @annotation(com.xyz.myapp.service.Idempotent)"/>
 ```
 
 -  bean 特定的 bean 名称/名称模式引用的，类似` BeanNameAutoProxyCreator`。
@@ -364,14 +373,14 @@ public class AfterReturningExample {
         // 注意名字必须完全匹配形参
         returning="retVal")
             // 使用返回值的 after 例子，注意这个 object 参数，这里不可能泛型化
-        // 这里如果限制返回值类型，后果自负
+        // 这里如果限制返回值类型，后果自负，spring 本身是 fully typed 类型匹配的，有好处也有坏处
     public void doAccessCheck(Object retVal) {
         // ...
     }
 
 }
 ```
- - After throwing（不怎么常见，但 Spring MVC 的 Controller Advice 就是这样实现的）。PCD 里是不包含对于 exception 的定位的，只能通过 PCD 里定位方法，然后使用这个 advice。
+ - After throwing（不怎么常见，但 Spring MVC 的 Controller Advice 就是这样实现的）。PCD 里是不包含对于 exception 的定位的，只能通过 PCD 里定位方法，然后使用这个 advice。这是 Spring 对异常处理的唯一设计。
 
 ```java
 @Aspect
@@ -389,7 +398,7 @@ public class AfterThrowingExample {
 ```
 
  - After (finally) advice = returning + throwing，隐式包含 finally。释放资源适合放在这里。
- - around（大部分的 advice 都可以这样用，因为它兼容 before、after（实际上囊括了上面所有的 advice）， 而且管控范围最广）适合申请资源、释放资源、权限管理、日志，它因为是栈封闭的，所以是线程安全地共享状态 - timer 的合理方式。
+ - around（大部分的 advice 都可以这样用，因为它兼容 before、after（实际上囊括了上面所有的 advice）， 而且管控范围最广）适合申请资源、释放资源、权限管理、日志，它因为是栈封闭的，所以是在方法执行前后，线程安全地共享状态（ share state before and after a method execution in a thread-safe manner） - timer 的合理方式。
 
 ```java
 
@@ -551,11 +560,11 @@ public class MyAspect {
      <aop:pointcut id="businessService"
         expression="execution(* com.xyz.myapp.service.*.*(..))"/>
         <!-- 这个类里有好几个 pointcut 表达式 -->
-        <aop:pointcut id="businessService"
+    <aop:pointcut id="businessService"
         expression="com.xyz.myapp.SystemArchitecture.businessService()"/>
-        <aop:aspect id="myAspect" ref="aBean">
+    <aop:aspect id="myAspect" ref="aBean">
             <!-- 在标记语言里面慎用 && -->
-            <aop:pointcut id="businessService"
+        <aop:pointcut id="businessService"
             expression="execution(* com.xyz.myapp.service.*.*(..)) and this(service)"/>
             <!-- before advice pointcut 的 service 参数会赋给 monitor -->
             <aop:before pointcut-ref="businessService" method="monitor"/>
@@ -568,6 +577,7 @@ public class MyAspect {
             <!-- 指定抛出异常 -->
             <aop:after-throwing
                 pointcut-ref="dataAccessOperation"
+                <!-- 绑定参数 -->
                 throwing="dataAccessEx"
                 method="doRecoveryActions"/>
         
@@ -577,6 +587,21 @@ public class MyAspect {
                 method="doReleaseLock"/>
 
         </aop:aspect>
+        
+
+<!-- introduction 的 xml 版本 -->
+<aop:aspect id="usageTrackerAspect" ref="usageTracking">
+    <aop:declare-parents
+        types-matching="com.xzy.myapp.service.*+"
+        implement-interface="com.xyz.myapp.service.tracking.UsageTracked"
+        default-impl="com.xyz.myapp.service.tracking.DefaultUsageTracked"/>
+
+    <aop:before
+        pointcut="com.xyz.myapp.SystemArchitecture.businessService()
+            and this(usageTracked)"
+            method="recordUsage"/>
+
+</aop:aspect>
     </aop:config>
     
     <bean id="aBean" class="...">
@@ -585,9 +610,69 @@ public class MyAspect {
 
 注意：这个`<aop:config/>`依赖于[auto-proxying][7]机制，因而与`AutoProxyCreator`如`BeanNameAutoProxyCreator`是相互冲突的，所以两者不要混用-与 Mixing Aspect Types 的观点稍微有点冲突。
 
-advisor 适用于内部的 advice，普通的 advice 应该使用 aspect。
+### Advisor
+
+Advisor 是 Spring 特定的概念，AspectJ 里没有。
+
+Advisor 是一个自包含的 aspect，只包含一个 advice - 类似 Java8 引入的函数式接口，而且它本身是一个平凡的 bean（废话），必须实现以 Spring 的官定 [advice interface][8]。advisor 适用于内部的 advice，普通的 advice 应该使用 aspect。
+
+```xml
+<aop:config>
+
+    <aop:pointcut id="businessService"
+        expression="execution(* com.xyz.myapp.service.*.*(..))"/>
+
+    <aop:advisor
+        pointcut-ref="businessService"
+        advice-ref="tx-advice"/>
+
+</aop:config>
+
+<!-- 事务 advisor -->
+<tx:advice id="tx-advice">
+    <tx:attributes>
+        <tx:method name="*" propagation="REQUIRED"/>
+    </tx:attributes>
+</tx:advice>
+
+<!-- cache definitions -->
+<cache:advice id="cacheAdvice" cache-manager="cacheManager">
+    <cache:caching cache="books">
+        <cache:cacheable method="findBook" key="#isbn"/>
+        <cache:cache-evict method="loadBooks" all-entries="true"/>
+    </cache:caching>
+</cache:advice>
+
+<!-- 缓存 advisor -->
+<!-- apply the cacheable behaviour to all BookService interfaces -->
+<aop:config>
+    <aop:advisor advice-ref="cacheAdvice" pointcut="execution(* x.y.BookService.*(..))"/>
+</aop:config>
+```
+
+## 到底应该使用哪种 AOP？
+
+AspectJ 实际上包含了 Compiler 和 weaver，不如 Spring AOP 开箱即用。
+根据 [Spring 文档][9]：
+
+ 1. 只做 container managed bean interception 可以只用 Spring AOP，否则考虑 AspectJ AOP（如某些领域对象，我想这里指的是 JPA 取出的 entity）。
+ 2. 如果只做 method interception，可以只用 Spring AOP，否则 考虑 AspectJ AOP（如 field set 和 get）。
+ 3. 当场景里需要大量使用 Aspect + 拥有 Eclipse AJDT 插件的时候，使用 AspectJ language syntax （code style）；否则使用 AspectJ 的注解（比如Aspect 很少）。
+
+## 使用 xml 或是 @AspectJ 注解
+
+- xml 的优点是：
+ - 它可以独立变化（不同的人对这一点持不同看法），所以比系统里的切面配置更清晰。
+- xml 的缺点是：
+ - 它违反 DRY 原则，造成了重复；
+ - 它表达能力有限：它只有 singleton instantiation model；它不能表达 composite pointcut；
+ 
 
 # 一般的继承关系
+
+spring-aop 模块的 jar 里包含 org.aopalliance.intercept package。
+
+代表单一方法的一等公民类型 Advice/Interceptor。
 
 Advice（marker interface） -> Interceptor（marker interface） -> MethodInterceptor（带有一个很重要的`invoke(MethodInvocation invocation)`方法） -> XXXInterceptor（比如 TransactionInterceptor）
 
@@ -674,7 +759,6 @@ public class AopNamespaceHandler extends NamespaceHandlerSupport {
 
 其中，我们常见的
 
-
 由 Spring 自己根据上下文，决定生成 还是 ，当然，这个行为实际上是受`proxy-target-class="true`这一属性控制的。引述官方文档如下：
 
 > If the target object to be proxied implements at least one interface
@@ -725,9 +809,28 @@ ProceedingJoinPoint 的 proceed 可以被执行 0 次、1 次、无数次。
 
 常见的例子就是缓存 API 在校验了 cache 了以后可以执行底层方法，也可以不执行底层方法。
 
-# MethodInvocation
+如果按顺序绑定 ProceedingJoinPoint 的参数到 advice 方法上，可以先处理那个参数，再把参数回传去再 proceed 来代替之前被处理的参数。如下面的例子，find 方法的第一个参数是 accountHolderNamePattern，被处理以后就出现新 pattern 来调用。
+
+```java
+@Around("execution(List<Account> find*(..)) && " +
+        "com.xyz.myapp.SystemArchitecture.inDataAccessLayer() && " +
+        "args(accountHolderNamePattern)")
+public Object preProcessQueryPattern(ProceedingJoinPoint pjp,
+        String accountHolderNamePattern) throws Throwable {
+    String newPattern = preProcess(accountHolderNamePattern);
+    return pjp.proceed(new Object[] {newPattern});
+}
+```
+
+# Spring 的 AOP API
+https://docs.spring.io/spring/docs/current/spring-framework-reference/core.html#aop-api-advice-types
+
+基本来自 AOP 同盟
+
+MethodInvocation
 
 joinpoit - Spring 自己的方法闭包执行点
+
 
 
 # 如何在被代理的 bean 里调用 proxy
@@ -741,7 +844,7 @@ joinpoit - Spring 自己的方法闭包执行点
 
 参考：
 
-1. [《Introduction to Pointcut Expressions in Spring》][8]
+1. [《Introduction to Pointcut Expressions in Spring》][10]
 
 
   [1]: https://docs.spring.io/spring/docs/current/spring-framework-reference/core.html#aop-proxying
@@ -751,4 +854,6 @@ joinpoit - Spring 自己的方法闭包执行点
   [5]: https://docs.spring.io/spring/docs/current/spring-framework-reference/core.html#aop-schema
   [6]: https://docs.spring.io/spring/docs/current/spring-framework-reference/core.html#xsd-schemas-aop
   [7]: https://docs.spring.io/spring/docs/current/spring-framework-reference/core.html#aop-autoproxy
-  [8]: https://www.baeldung.com/spring-aop-pointcut-tutorial#3-this-and-target
+  [8]: https://docs.spring.io/spring/docs/current/spring-framework-reference/core.html#aop-api-advice-types
+  [9]: https://docs.spring.io/spring/docs/current/spring-framework-reference/core.html#aop-spring-or-aspectj
+  [10]: https://www.baeldung.com/spring-aop-pointcut-tutorial#3-this-and-target
