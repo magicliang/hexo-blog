@@ -514,6 +514,8 @@ public class UsageTracking {
 UsageTracked usageTracked = (UsageTracked) context.getBean("myService");
 ```
 
+这个功能在 Spring 内部实际上非常悠久，在 2003 年开发的代码里，就留有 IntroductionAdvisor 的痕迹了。
+
 ###  高级主题 - AOP （其他）初始化模型
 
 缺省的情况下，全局只有一个单例 aspect， AOP 把它称作“singleton instantiation model”。
@@ -608,7 +610,7 @@ public class MyAspect {
 </beans>
 ```
 
-注意：这个`<aop:config/>`依赖于[auto-proxying][7]机制，因而与`AutoProxyCreator`如`BeanNameAutoProxyCreator`是相互冲突的，所以两者不要混用-与 Mixing Aspect Types 的观点稍微有点冲突。
+注意：**这个`<aop:config/>`依赖于[auto-proxying][7]机制，因而与`AutoProxyCreator`如`BeanNameAutoProxyCreator`是相互冲突的**，所以两者不要混用-与 Mixing Aspect Types 的观点稍微有点冲突。换言之，`<aop:config/>`与`<bean class="org.springframework.aop.framework.autoproxy.BeanNameAutoProxyCreator">`或者手动创建的`DefaultAdvisorAutoProxyCreator`互斥。从优先级来讲，恐怕 <aop:config/> 更适合大多数场景。
 
 ### Advisor
 
@@ -656,7 +658,7 @@ AspectJ 实际上包含了 Compiler 和 weaver，不如 Spring AOP 开箱即用�
 根据 [Spring 文档][9]：
 
  1. 只做 container managed bean interception 可以只用 Spring AOP，否则考虑 AspectJ AOP（如某些领域对象，我想这里指的是 JPA 取出的 entity）。
- 2. 如果只做 method interception，可以只用 Spring AOP，否则 考虑 AspectJ AOP（如 field set 和 get）。
+ 2. 如果只做 method interception，可以只用 Spring AOP，否则考虑 AspectJ AOP（如 field set 和 get）- **这决定了实际上这种 aspect 的增强比 proxied-based 的方案强，self-invocation 依然可以被拦截**。
  3. 当场景里需要大量使用 Aspect + 拥有 Eclipse AJDT 插件的时候，使用 AspectJ language syntax （code style）；否则使用 AspectJ 的注解（比如Aspect 很少）。
 
 ## 使用 xml 或是 @AspectJ 注解
@@ -666,7 +668,1155 @@ AspectJ 实际上包含了 Compiler 和 weaver，不如 Spring AOP 开箱即用�
 - xml 的缺点是：
  - 它违反 DRY 原则，造成了重复；
  - 它表达能力有限：它只有 singleton instantiation model；它不能表达 composite pointcut；
+
+# 代理机制
+
+## 手动调用代理工厂
+
+提供 jdkDynamicProxy 和 cglib 的 proxy 之外的统一抽象。
+
+![aop-proxy-call.png](aop-proxy-call.png)
+
+```java
+public class Main {
+    public static void main(String[] args) {
+        ProxyFactory factory = new ProxyFactory(new SimplePojo());
+        factory.addInterface(Pojo.class);
+        factory.addAdvice(new RetryAdvice());
+
+        Pojo pojo = (Pojo) factory.getProxy();
+        // this is a method call on the proxy!
+        pojo.foo();
+    }
+}
+```
  
+从外部调用 proxy，会调到 advice。self-invocation （大多数情况下）不会-因为，`Finally, it must be noted that AspectJ does not have this self-invocation issue because it is not a proxy-based AOP framework`，AspectJ 还是很强大的。
+
+## 如何在被代理的 bean 里调用 proxy
+
+ 1. 要求暴露了代理，如`<aop:aspectj-autoproxy proxy-target-class="true" expose-proxy="true"/>`或者 `@EnableAspectJAutoProxy(exposeProxy=true)`或者`<aop:config proxy-target-class="true" expose-proxy="true">`或者`        factory.setExposeProxy(true)`。
+ 2. 使用`AopContext`：`((Service) AopContext.currentProxy()).callMethodB();`这里的callMethodB 是一个需要被代理增强的方法。这样做是不好的，因为这个类感知到了它正在被 proxied，而且直接耦合 Spring API。
+
+它基于一段命名线程局部对象：
+
+```java
+public final class AopContext {
+
+    /**
+     * ThreadLocal holder for AOP proxy associated with this thread.
+     * Will contain {@code null} unless the "exposeProxy" property on
+     * the controlling proxy configuration has been set to "true".
+     * @see ProxyConfig#setExposeProxy
+     */
+    private static final ThreadLocal<Object> currentProxy = new NamedThreadLocal<>("Current AOP proxy");
+
+
+    private AopContext() {
+    }
+
+
+    /**
+     * Try to return the current AOP proxy. This method is usable only if the
+     * calling method has been invoked via AOP, and the AOP framework has been set
+     * to expose proxies. Otherwise, this method will throw an IllegalStateException.
+     * @return the current AOP proxy (never returns {@code null})
+     * @throws IllegalStateException if the proxy cannot be found, because the
+     * method was invoked outside an AOP invocation context, or because the
+     * AOP framework has not been configured to expose the proxy
+     */
+    public static Object currentProxy() throws IllegalStateException {
+        Object proxy = currentProxy.get();
+        if (proxy == null) {
+            throw new IllegalStateException(
+                    "Cannot find current proxy: Set 'exposeProxy' property on Advised to 'true' to make it available.");
+        }
+        return proxy;
+    }
+
+    /**
+     * Make the given proxy available via the {@code currentProxy()} method.
+     * <p>Note that the caller should be careful to keep the old value as appropriate.
+     * @param proxy the proxy to expose (or {@code null} to reset it)
+     * @return the old proxy, which may be {@code null} if none was bound
+     * @see #currentProxy()
+     */
+    @Nullable
+    static Object setCurrentProxy(@Nullable Object proxy) {
+        Object old = currentProxy.get();
+        if (proxy != null) {
+            currentProxy.set(proxy);
+        }
+        else {
+            currentProxy.remove();
+        }
+        return old;
+    }
+
+}
+```
+ 
+## @AspectJ 代理的创建方法
+
+注意，这里产生的还是 proxy，适用于注解 bean：
+
+```java
+// create a factory that can generate a proxy for the given target object
+AspectJProxyFactory factory = new AspectJProxyFactory(targetObject);
+
+// add an aspect, the class must be an @AspectJ aspect
+// you can call this as many times as you need with different aspects
+factory.addAspect(SecurityManager.class);
+
+// you can also add existing aspect instances, the type of the object supplied must be an @AspectJ aspect
+factory.addAspect(usageTracker);
+
+// now get the proxy object...
+MyInterfaceType proxy = factory.getProxy();
+```
+
+# 使用真正的 AspectJ
+
+ApsectJ 提供一个 compiler 和一个 weaver，可以实现 compile-time weaving 和 load-time weaving - 所以一共有三种织入 aspect 的方法，pure java framework（Java 动态代理 + cglib 代理）都是 runtime，AspectJ 则是更前置的语言特性。Spring 交付一个专门的库`spring-aspects.jar`，来提供以上功能。
+
+通常编译期的织入，由一个特定的 compiler 来实现。可以由 [ant tasks][10] 来实现，基于 ajc。对性能的影响。
+
+load-time 的织入则依赖于 LTW 机制。对性能的影响比 pure java aop 小。
+
+## 使用 AspectJ 来进行领域对象的依赖注入（Dependency Injection）
+
+所谓的领域对象，指的是 new 出来的、orm 框架创建出来的-带有 id 的对象，符合 ddd 里对 domain entity 的定义。
+
+但我们可以使用 AspectJ，让被 new 出来的对象，也被 config。在 Spring 里，有一类类型如果被标记为`@Configurable`的，Spring 就会改写它的行为，使他隐式地成为一个 bean。这种支持是用在“容器控制之外的对象”上的，实际上建立了一种 “AspectJ 控制的对象”。
+
+AspectJ在类加载时，将AnnotationBeanConfigurerAspect切面将织入到（weaving）标注有@Configurable注解的类中。
+
+AnnotationBeanConfigurerAspect将这些类和Spring IoC容器进行了关联，AnnotationBeanConfigurerAspect本身实现了BeanFactoryAware的接口。 
+
+实际上，大量的单元测试的 mock 对象，如果这种注入不生效，手动地注入 stub 和 skeleton 也是可以生效的。
+
+AnnotationBeanConfigurerAspect 是一个单例切面，每一个类加载器拥有一个单例。
+
+ - 如果在一个类加载器里定义了多个 Spring Context，要考虑清楚在哪个 Context 里配置 @EnableSpringConfigured bean，并放置 spring-aspects.jar。
+ - 如果一个父的 spring context 和多个子 spring context （特别是多个 servlet 容器场景下）共用一些基础 service，应该在父 context 里激活 @EnableSpringConfigured 配置，在它的类路径（WEB-INF/）里放置 spring-aspects.jar。
+
+一个例子：
+
+ - 需要准备的 jar：
+  - spring-core，spring-beans，spring-context，spring-instrument，spring-aspects，aspectjweaver。实际执行的的 LTW 是 spring-context 的`InstrumentationLoadTimeWeaver`
+  - 在`@Configuration`上加上`@EnableLoadTimeWeaving`和`@EnableSpringConfigured`
+  - 运行前（有可能要涉及改动**launch script**）加上-javaagent:/path/to/spring-instrument.jar这个 jvm 参数（如：-javaagent:/Users/magicliang/.m2/repository/org/springframework/spring-instrument/5.2.5.RELEASE/spring-instrument-5.2.5.RELEASE.jar）；理论上还可以加上 aspectjweaver.jar 的路径（例如：-Xset:weaveJavaxPackages=true -javaagent:/Users/magicliang/.m2/repository/org/aspectj/aspectjweaver/1.9.5/aspectjweaver-1.9.5.jar，-Xset 这段可以去掉），但实际上没有尝试成功 work 过。
+  - 要让 AnnotationBeanConfigurerAspect 被织入到特定 bean 里面，强行使特定的对象和 Spring 容器被关联起来。
+
+待确定用途的功能：
+
+使用自定义的 aspect + 工厂方法 bean：
+
+```xml
+<bean id="profiler" class="com.xyz.profiler.Profiler"
+        factory-method="aspectOf"> 
+
+    <property name="profilingStrategy" ref="jamonProfilingStrategy"/>
+</bean>
+```
+
+## 上面的例子不成功，这个例子会成功
+
+参考[《spring-boot-aspectj》][11]
+
+基础的配置：
+
+resources/org/aspectj/aop.xml
+```
+<!DOCTYPE aspectj PUBLIC "-//AspectJ//DTD//EN" "https://www.eclipse.org/aspectj/dtd/aspectj.dtd">
+<!-- 这个文件只能放在类路径下的 META-INF 或者  org/aspectj 文件夹里-->
+<!-- 放在 org/aspectj 文件夹里更好，因为 https://github.com/dsyer/spring-boot-aspectj -->
+<aspectj>
+    <weaver options="-verbose -showWeaveInfo">
+        <!-- only weave classes in our application-specific packages -->
+        <!-- .. 代表子包 -->
+        <!-- 这里可以注释掉，aspect 也会生效 -->
+<!--                <include within="com.magicliang..*"/>-->
+        <!-- 绝大多数情况下，不需要打开这个注解，我们不需要 advised spring boot 自己的模块 -->
+        <!--        <include within="org.springframework.boot..*"/>-->
+    </weaver>
+    <aspects>
+        <!-- 这里不能注释，否则无法让切面生效 -->
+        <aspect name="com.magicliang.experiments.aspect.ProfilingAspect"/>
+    </aspects>
+</aspectj>
+```
+
+```java
+/**
+ * project name: spring-experiments
+ * <p>
+ * description: 被织入的类
+ *
+ * 使用 javaagent 要改启动脚本。
+ *
+ * 要给 jvm 加参数，而不是 application 加参数（application 的 main class 本身也是 jvm 的一个参数）：
+ * $HOME
+ * -javaagent:/Users/magicliang/.m2/repository/org/springframework/spring-instrument/5.2.5.RELEASE/spring-instrument-5.2.5.RELEASE.jar
+ *
+ * 不要使用这个参数，没用：
+ * -Xset:weaveJavaxPackages=true -javaagent:/Users/magicliang/.m2/repository/org/aspectj/aspectjweaver/1.9.5/aspectjweaver-1.9.5.jar
+ *
+ * @author magicliang
+ * <p>
+ * date: 2020-04-18 17:43
+ */
+@Data
+// 这个注解不能放在 spring-managed bean 上，不然会导致对象被初始化两次
+// 这个注解什么作用都不起，它会指示 AnnotationBeanConfigurerAspect 在 construction 前后把依赖注入进这个 bean。注解和切面会联系在一起
+// preConstruction 一用上，就会导致注入在 construction 之前。value = "user"，以为着要寻找一个名为 user 的 bean definition
+// @Configurable(autowire = Autowire.BY_NAME, dependencyCheck = true)
+@Configurable
+@Slf4j
+public class User {
+
+    @Autowired
+    private Dog dog;
+
+    public void output() {
+        foo();
+    }
+
+    public void foo() {
+        log.info("doggy is:" + dog.toString());
+    }
+
+    private String name;
+    private int age;
+}
+
+@Data
+public class Dog {
+
+    private int id;
+    private String name;
+}
+
+/**
+ * project name: spring-experiments
+ * <p>
+ * description:
+ *
+ * @author magicliang
+ * <p>
+ * date: 2020-04-18 23:28
+ */
+@Slf4j
+// 这个注解可有可无
+// @ConfigurationProperties("interceptor")
+@Aspect
+public class ProfilingAspect {
+
+    @Around("methodsToBeProfiled()")
+    public Object profile(ProceedingJoinPoint pjp) throws Throwable {
+        StopWatch sw = new StopWatch(getClass().getSimpleName());
+        try {
+            sw.start(pjp.getSignature().getName());
+            return pjp.proceed();
+        } finally {
+            sw.stop();
+            log.info("time:" + sw.prettyPrint());
+        }
+    }
+
+    @Pointcut("execution(public * com.magicliang..*.*(..))")
+    public void methodsToBeProfiled() {
+    }
+}
+
+@RestController
+@RequestMapping("/res/v1")
+@Slf4j
+// 只有打开这个注解， @Configurable 注解才会生效
+@EnableSpringConfigured
+@SpringBootApplication
+public class AspectjLoadTimeWeaverApplication {
+
+    public static void main(String[] args) {
+        SpringApplication.run(AspectjLoadTimeWeaverApplication.class, args);
+    }
+
+    @GetMapping("/user")
+    public User getUser() {
+        User user = new User();
+        user.output();
+        return user;
+    }
+
+    // 没什么卵用的 ConditionalOnClass
+    // @ConditionalOnClass(AnnotationBeanConfigurerAspect.class)
+    @Bean
+    Dog dog() {
+        Dog d = new Dog();
+        d.setId(1);
+        d.setName("dog");
+        return d;
+    }
+
+    // 这个 bean 方法有的项目建议有，但其实没有也无所谓
+//    @Bean
+//    public ProfilingAspect interceptor() {
+//        // This will barf at runtime if the weaver isn't working (probably a
+//        // good thing)
+//        return Aspects.aspectOf(ProfilingAspect.class);
+//    }
+
+}
+```
+
+启动的时候加上这个 vm args：-javaagent:${HOME}/.m2/repository/org/springframework/spring-instrument/5.2.5.RELEASE/spring-instrument-5.2.5.RELEASE.jar
+
+只要有这个 javaagent，@Configurable + @EnableSpringConfigured 的自动注入就会生效 - 这个注解强依赖于这个 jave agent。
+
+而如果有了 aop.xml 的 aspect，怎样的 public 方法都可以被增强。
+
+Spring Boot 提供的 @EnableLoadTimeWeaving 和 spring-instrument.jar [理论上应该一起生效][12]，但不知道怎样搭配才能生效还不可知。
+
+## compile time weaving
+
+compile time weaving 需要给 maven 增加以下配置：
+
+```xml
+<build>
+        <pluginManagement>
+            <plugins>
+                <plugin>
+                    <groupId>org.springframework.boot</groupId>
+                    <artifactId>spring-boot-maven-plugin</artifactId>
+                    <dependencies>
+                    <!-- thin-jar 是相对于 fatjar 而言的，比较难用 -->
+<!--                        <dependency>-->
+<!--                            <groupId>org.springframework.boot.experimental</groupId>-->
+<!--                            <artifactId>spring-boot-thin-layout</artifactId>-->
+<!--                            <version>${thin-jar.version}</version>-->
+<!--                        </dependency>-->
+                        <dependency>
+                            <groupId>org.aspectj</groupId>
+                            <artifactId>aspectjweaver</artifactId>
+                            <version>${aspectj.version}</version>
+                        </dependency>
+                    </dependencies>
+                </plugin>
+            </plugins>
+        </pluginManagement>
+        <plugins>
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+            </plugin>
+
+            <!-- 使用 delombok 插件来使生成的代码无 lombok，让 aspectjc 的编译无寻找不到符号问题 -->
+            <plugin>
+                <groupId>org.projectlombok</groupId>
+                <artifactId>lombok-maven-plugin</artifactId>
+                <version>1.16.16.0</version>
+                <executions>
+                    <execution>
+                        <phase>generate-sources</phase>
+                        <goals>
+                            <goal>delombok</goal>
+                        </goals>
+                    </execution>
+                </executions>
+                <configuration>
+                    <addOutputDirectory>false</addOutputDirectory>
+                    <sourceDirectory>src/main/java</sourceDirectory>
+                </configuration>
+            </plugin>
+
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>aspectj-maven-plugin</artifactId>
+                <version>1.10</version>
+                <configuration>
+                    <source>${java.version}</source>
+                    <target>${java.version}</target>
+                    <proc>none</proc>
+                    <complianceLevel>${java.version}</complianceLevel>
+                    <showWeaveInfo>true</showWeaveInfo>
+                    <!-- 另一种解法 https://stackoverflow.com/questions/41910007/lombok-and-aspectj -->
+                </configuration>
+                <executions>
+                    <execution>
+                        <goals>
+                            <goal>compile</goal>
+                        </goals>
+                    </execution>
+                </executions>
+                <dependencies>
+                    <dependency>
+                        <groupId>org.aspectj</groupId>
+                        <artifactId>aspectjtools</artifactId>
+                        <version>${aspectj.version}</version>
+                    </dependency>
+                </dependencies>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-deploy-plugin</artifactId>
+                <configuration>
+                    <skip>true</skip>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+    
+    <pluginRepositories>
+        <pluginRepository>
+            <id>spring-snapshots</id>
+            <name>Spring Snapshots</name>
+            <url>https://repo.spring.io/snapshot</url>
+            <snapshots>
+                <enabled>true</enabled>
+            </snapshots>
+        </pluginRepository>
+        <pluginRepository>
+            <id>spring-milestones</id>
+            <name>Spring Milestones</name>
+            <url>https://repo.spring.io/milestone</url>
+            <snapshots>
+                <enabled>false</enabled>
+            </snapshots>
+        </pluginRepository>
+    </pluginRepositories>
+```
+
+然后不用 javaagent 就能启动增强了。
+
+但是 @Configurable 不生效，要生效，还是要加上 javaagent：
+
+```bash
+java -javaagent:$HOME/.m2/repository/org/aspectj/aspectjweaver/1.8.13/aspectjweaver-1.8.13.jar -jar target/*.jar
+```
+
+被编译增强的类，debug 起来非常困难，因为增加了很多代码。
+还是普通的 spring aop 就足够了。
+
+## Spring 允许每个类加载器有细颗粒的 LTW
+
+待研究这样做的用处是什么
+
+# Spring 的 AOP API
+
+## 切点相关 API
+
+切点负责让 advices 指向特定的类和方法。
+
+Spring 用切点 API，使得切点成为一个框架特性，而不是一个语言特性-语言特性需要编译器支持。
+
+但是，大多数情况下，我们应该**只使用一个切点表达式**就足够了，不要直接使用切点 API。
+
+```java
+public interface Pointcut {
+    //  restrict the pointcut to a given set of target classes
+    ClassFilter getClassFilter();
+
+    MethodMatcher getMethodMatcher();
+}
+```
+
+切点的 api 还可以分为两个部分（用于 union 其他 method matcher）：
+
+```java
+public interface ClassFilter {
+
+    boolean matches(Class clazz);
+}
+```
+
+ClassFilter 用于限制一个目标类的切点。
+
+而 MethodMatcher 更重要：
+
+```java
+public interface MethodMatcher {
+
+    boolean matches(Method m, Class targetClass);
+
+    boolean isRuntime();
+
+    boolean matches(Method m, Class targetClass, Object[] args);
+}
+```
+
+双参数的 matches(Method, Class) 方法可以确认一个目标类上的特定方法是否符合切点要求。这个求值可以在 AOP proxy 被创建时发生，而不是每一次方法调用时发生。它返回 true，则 isRuntime 返回 true，然后三参数的 matches 每次方法执行会被调用。
+
+大多数 MethodMatcher 被实现为静态的，isRuntime 返回 false，则 三参数的 matches 永不会被执行。这是被 Spring 鼓励的，这样 Spring 可以在 AOP proxy 被创建的时候，缓存 pointcut evaluation 的结果。
+
+除此之外，并集和交集的 API 可以参考`org.springframework.aop.support.Pointcuts`和`ComposablePointcut`。
+
+大多数情况下，使用一个静态切点（即只关注 target class 上的方法特征，而不关注真正的运行时 arguments）就最好了
+
+### 一些有用的切点实现
+
+使用切点作为 bean，然后关联 bean 和 advice。
+
+#### JdkRegexpMethodPointcut
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<beans xmlns="http://www.springframework.org/schema/beans"    
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"       
+    xsi:schemaLocation="http://www.springframework.org/schema/beans 
+    http://www.springframework.org/schema/beans/spring-beans-2.0.xsd">
+ 
+  <bean id="person" class="Person"/>
+  <bean id="loggerPerson" class="LoggerPerson"/>
+  <bean id="pointcut" class="org.springframework.aop.support.JdkRegexpMethodPointcut">
+    <property name="patterns">
+      <list>
+        <value>.*ay.*</value>
+        <value>.*ie</value>
+      </list>
+    </property>
+  </bean>
+ 
+ <!-- DefaultPointcutAdvisor 就是典型的 advice api + pointcut api -->
+  <bean id="advisor" class="org.springframework.aop.support.DefaultPointcutAdvisor">
+    <property name="pointcut" ref="pointcut"/>
+    <property name="advice" ref="loggerPerson"/>
+  </bean>
+ 
+  <bean id="ProxyFactoryBean" class="org.springframework.aop.framework.ProxyFactoryBean">
+    <property name="target">
+      <ref bean="person"/>
+    </property>
+    <property name="interceptorNames">
+      <list>
+        <value>advisor</value>
+      </list>
+    </property>
+  </bean>
+</beans>
+```
+
+#### RegexpMethodPointcutAdvisor
+
+```xml
+<bean id="settersAndAbsquatulateAdvisor"
+        class="org.springframework.aop.support.RegexpMethodPointcutAdvisor">
+    <property name="advice">
+        <ref bean="beanNameOfAopAllianceInterceptor"/>
+    </property>
+    <property name="patterns">
+        <list>
+            <value>.*set.*</value>
+            <value>.*absquatulate</value>
+        </list>
+    </property>
+</bean>
+```
+
+#### ControlFlowPointcut
+
+[Control Flow Pointcut][13]
+
+```java
+package roseindia.net.coltrolFlowpointcut;
+
+public class SimpleClass {
+    public void sayHi() {
+        System.out.println("Hello Friend");
+    }
+}
+
+package roseindia.net.coltrolFlowpointcut;
+
+import java.lang.reflect.Method;
+
+import org.aopalliance.intercept.MethodInterceptor;
+import org.springframework.aop.MethodBeforeAdvice;
+
+public class TestAdvice implements MethodBeforeAdvice {
+
+    @Override
+    public void before(Method method, Object[] boObjects, Object object)
+            throws Throwable {
+        // TODO Auto-generated method stub
+        System.out.println("Calling before " + method);
+    }
+
+}
+
+package roseindia.net.coltrolFlowpointcut;
+
+import org.aopalliance.aop.Advice;
+import org.springframework.aop.Advisor;
+import org.springframework.aop.ClassFilter;
+import org.springframework.aop.MethodMatcher;
+import org.springframework.aop.Pointcut;
+import org.springframework.aop.framework.ProxyFactory;
+import org.springframework.aop.support.ControlFlowPointcut;
+import org.springframework.aop.support.DefaultPointcutAdvisor;
+
+public class TestControlFlow {
+    public void test() {
+        SimpleClass target = new SimpleClass();
+        Pointcut pointcut = new ControlFlowPointcut(TestControlFlow.class,
+                "controlFlowTest");
+        Advice advice = new TestAdvice();
+        ProxyFactory proxyFactory = new ProxyFactory();
+
+        Advisor advisor = new DefaultPointcutAdvisor(pointcut, advice);
+        proxyFactory.addAdvisor(advisor);
+        proxyFactory.setTarget(target);
+        SimpleClass simpleProxy = (SimpleClass) proxyFactory.getProxy();
+        System.out.println("Calling Normally");
+        simpleProxy.sayHi();
+        System.out.println("Calling in ControlFlow");
+        controlFlowTest(simpleProxy);
+    }
+
+    public void controlFlowTest(SimpleClass simpleClass) {
+        simpleClass.sayHi();
+    }
+
+}
+
+package roseindia.net.coltrolFlowpointcut;
+
+public class MainClaz {
+    public static void main(String[] args) {
+        TestControlFlow testControlFlow = new TestControlFlow();
+        testControlFlow.test();
+    }
+}
+```
+
+#### 通用的静态切点父类
+
+```java
+class TestStaticPointcut extends StaticMethodMatcherPointcut {
+
+    public boolean matches(Method m, Class targetClass) {
+        // return true if custom criteria match
+    }
+}
+```
+
+## advice 相关 API
+
+Spring 的 advice 主要分为 per-class 和 per-instance 两类。 per-class 最常用，比如 transaction advisor； per-instance 通常用来作为 introduction 支持混型的基本技术，它会给 proxied object 增加状态。
+
+尽量使用 Alliance-compliant AOP  advice 的拦截器，这样可以保证拦截器可以被其他 AOP 框架使用（如 google guice）。
+
+interceptor 自己会产生一个 interceptor chain，这个 chain 是会被破坏的。
+
+各种 advice、advisor 可以在一套 proxy 配置里生效。
+
+### Interception Around Advice
+
+最常用的拦截器，能够完全控制方法的执行。在方法前后，完全环绕：
+
+```java
+public interface MethodInterceptor extends Interceptor {
+
+    Object invoke(MethodInvocation invocation) throws Throwable;
+}
+public class DebugInterceptor implements MethodInterceptor {
+
+    public Object invoke(MethodInvocation invocation) throws Throwable {
+        System.out.println("Before: invocation=[" + invocation + "]");
+        Object rval = invocation.proceed();
+        System.out.println("Invocation returned");
+        return rval;
+    }
+}
+```
+
+### Before Advice
+
+只在方法前执行，所以不需要`MethodInvocation`，只要能够引用到 Method 即可：
+```java
+public interface MethodBeforeAdvice extends BeforeAdvice {
+
+    void before(Method m, Object[] args, Object target) throws Throwable;
+}
+
+public class CountingBeforeAdvice implements MethodBeforeAdvice {
+
+    private int count;
+
+    public void before(Method m, Object[] args, Object target) throws Throwable {
+        ++count;
+    }
+
+    public int getCount() {
+        return count;
+    }
+}
+```
+
+它如果挂了，方法执行就会挂掉。而且会抛出一个异常给 client 调用端-如果异常 match client 的异常，可以抛原始异常给 client，否则会抛出一个包装器。
+
+这个 advice 可以配合切点使用。
+
+### Throws Advice
+
+这是一个 tag interface，所以本身不包含任何的实际方法。但 Spring 又支持 typed advice，所以可以自由组织各种 advice 的实现方法。
+
+```java
+// 原始的 tag interface
+public interface ThrowsAdvice extends AfterAdvice {
+
+}
+// 推荐的模式
+afterThrowing([Method, args, target], subclassOfThrowable)
+
+// 现实中的 advice
+public class RemoteThrowsAdvice implements ThrowsAdvice {
+
+    public void afterThrowing(RemoteException ex) throws Throwable {
+        // Do something with remote exception
+    }
+}
+
+public class ServletThrowsAdviceWithArguments implements ThrowsAdvice {
+
+    public void afterThrowing(Method m, Object[] args, Object target, ServletException ex) {
+        // Do something with all arguments
+    }
+}
+
+public static class CombinedThrowsAdvice implements ThrowsAdvice {
+
+    public void afterThrowing(RemoteException ex) throws Throwable {
+        // Do something with remote exception
+    }
+
+    public void afterThrowing(Method m, Object[] args, Object target, ServletException ex) {
+        // Do something with all arguments
+    }
+}
+```
+
+这个 advice 可以配合切点使用。
+
+### After Returning Advice
+
+可以获取返回参数和抛出异常：
+
+```java
+public interface AfterReturningAdvice extends Advice {
+
+    void afterReturning(Object returnValue, Method m, Object[] args, Object target)
+            throws Throwable;
+}
+```
+
+这个 advice 可以配合切点使用。
+
+### Introduction Advice
+
+```java
+public interface IntroductionInterceptor extends MethodInterceptor, DynamicIntroductionAdvice {}
+
+public class LockMixin extends DelegatingIntroductionInterceptor implements Lockable {
+
+    private boolean locked;
+
+    public void lock() {
+        this.locked = true;
+    }
+
+    public void unlock() {
+        this.locked = false;
+    }
+
+    public boolean locked() {
+        return this.locked;
+    }
+
+    public Object invoke(MethodInvocation invocation) throws Throwable {
+        if (locked() && invocation.getMethod().getName().indexOf("set") == 0) {
+            throw new LockedException();
+        }
+        return super.invoke(invocation);
+    }
+}
+
+public class LockMixinAdvisor extends DefaultIntroductionAdvisor {
+
+    public LockMixinAdvisor() {
+        super(new LockMixin(), Lockable.class);
+    }
+}
+
+// 接下来可以用 xml bean、 Advised.addAdvisor() 或者 auto proxy creators 来让这个 advisor 生效。
+```
+
+这个 advice 不可以配合切点使用。
+
+## ProxyFactoryBean
+
+一个 bean 引用一个 ProxyFactoryBean，其实不是引用它的 instance，而是在引用它的 getObject() 产生的对象。ProxyFactoryBean 有一个优点，因为由他搞出来的 advices 和 pointcuts 本身都是 IoC 容器管理的 bean。
+
+几个基础属性：
+
+ - proxyTargetClass: true，强制使用 CGLIB 代理。proxy-based vs interface-based（jdk-based proxy）。如果 interface-based 不可能正确生成，即使是这个值是 false，也会强制使用 CGLIB 代理。principle of least surprise。
+ - optimize：可以对 CGLIB 代理施以激进优化。
+ - frozen：是否允许变动配置（如增加 advice）。
+ - exposeProxy：是否把代理放在线程里，允许 AopContext.currentProxy() 生效。
+ - proxyInterfaces：接口列表。如果什么都不提供，使用 CGLIB 代理，提供了，有可能使用 jdk 动态代理。
+ - interceptorNames：拦截器、advice 列表。名字的顺序实际上决定了 interceptor chain 的生效顺序。这个列表本身不是 name-ref 的模式，是为了允许 prototype 模式生效。
+ - singleton：是否单例，大部分的 FactoryBean 的实现的这个值都是 true。
+
+如果有可能，Spring 会顺着接口列表生成 JdkDynamicProxy；否则，会退而求其次生成 cglib proxy。
+
+```xml
+<bean id="personTarget" class="com.mycompany.PersonImpl">
+    <property name="name" value="Tony"/>
+    <property name="age" value="51"/>
+</bean>
+
+<bean id="myAdvisor" class="com.mycompany.MyAdvisor">
+    <property name="someProperty" value="Custom string property value"/>
+</bean>
+
+<bean id="debugInterceptor" class="org.springframework.aop.interceptor.DebugInterceptor">
+</bean>
+
+<bean id="person"
+    class="org.springframework.aop.framework.ProxyFactoryBean">
+    <property name="proxyInterfaces" value="com.mycompany.Person"/>
+
+    <property name="target" ref="personTarget"/>
+    <property name="interceptorNames">
+        <list>
+            <!-- You might be wondering why the list does not hold bean references. The reason for this is that, if the singleton property of the ProxyFactoryBean is set to false, it must be able to return independent proxy instances. If any of the advisors is itself a prototype, an independent instance would need to be returned, so it is necessary to be able to obtain an instance of the prototype from the factory. Holding a reference is not sufficient.
+ -->
+            <value>myAdvisor</value>
+            <value>debugInterceptor</value>
+        </list>
+    </property>
+</bean>
+```
+
+```java
+Person person = (Person) factory.getBean("person");
+```
+
+我们也可以使用一个内部类声明，使全局的 bean 能够藏住一个不可被引用的被代理的 target，而且也无法从全局的其他地方被引用。
+
+```xml
+<bean id="myAdvisor" class="com.mycompany.MyAdvisor">
+    <property name="someProperty" value="Custom string property value"/>
+</bean>
+
+<bean id="debugInterceptor" class="org.springframework.aop.interceptor.DebugInterceptor"/>
+
+<bean id="person" class="org.springframework.aop.framework.ProxyFactoryBean">
+    <property name="proxyInterfaces" value="com.mycompany.Person"/>
+    <!-- Use inner bean, not local reference to target -->
+    <property name="target">
+        <bean class="com.mycompany.PersonImpl">
+            <property name="name" value="Tony"/>
+            <property name="age" value="51"/>
+        </bean>
+    </property>
+    <property name="interceptorNames">
+        <list>
+            <value>myAdvisor</value>
+            <value>debugInterceptor</value>
+        </list>
+    </property>
+</bean>
+```
+
+interceptorNames 支持通配符模式：
+
+```xml
+<bean id="proxy" class="org.springframework.aop.framework.ProxyFactoryBean">
+    <property name="target" ref="service"/>
+    <property name="interceptorNames">
+        <list>
+            <value>global*</value>
+        </list>
+    </property>
+</bean>
+
+<bean id="global_debug" class="org.springframework.aop.interceptor.DebugInterceptor"/>
+<bean id="global_performance" class="org.springframework.aop.interceptor.PerformanceMonitorInterceptor"/>
+```
+
+```xml
+<!-- 父代理工厂 -->
+<bean id="txProxyTemplate" abstract="true"
+        class="org.springframework.transaction.interceptor.TransactionProxyFactoryBean">
+    <property name="transactionManager" ref="transactionManager"/>
+    <property name="transactionAttributes">
+        <props>
+            <prop key="*">PROPAGATION_REQUIRED</prop>
+        </props>
+    </property>
+</bean>
+<!-- 子代理工厂 -->
+<bean id="myService" parent="txProxyTemplate">
+    <property name="target">
+        <bean class="org.springframework.samples.MyServiceImpl">
+        </bean>
+    </property>
+</bean>
+<!-- 子代理工厂覆盖父配置 -->
+<bean id="mySpecialService" parent="txProxyTemplate">
+    <property name="target">
+        <bean class="org.springframework.samples.MySpecialServiceImpl">
+        </bean>
+    </property>
+    <property name="transactionAttributes">
+        <props>
+            <prop key="get*">PROPAGATION_REQUIRED,readOnly</prop>
+            <prop key="find*">PROPAGATION_REQUIRED,readOnly</prop>
+            <prop key="load*">PROPAGATION_REQUIRED,readOnly</prop>
+            <prop key="store*">PROPAGATION_REQUIRED</prop>
+        </props>
+    </property>
+</bean>
+```
+
+## 程序化地创建 AOP 代理的方法
+
+使用 ProxyFactory（注意，不是 xml 使用的`ProxyFactoryBean`）；
+
+```java
+ProxyFactory factory = new ProxyFactory(myBusinessInterfaceImpl);
+factory.addAdvice(myMethodInterceptor);
+factory.addAdvisor(myAdvisor);
+MyBusinessInterface tb = (MyBusinessInterface) factory.getProxy();
+```
+
+所有的 proxy 都可以转化为`org.springframework.aop.framework.Advise`接口，其包含这些方法：
+
+可以看出来 advice 和 advisor 的区别还是很大的：
+
+```xml
+Advisor[] getAdvisors();
+
+void addAdvice(Advice advice) throws AopConfigException;
+
+void addAdvice(int pos, Advice advice) throws AopConfigException;
+
+void addAdvisor(Advisor advisor) throws AopConfigException;
+
+void addAdvisor(int pos, Advisor advisor) throws AopConfigException;
+
+int indexOf(Advisor advisor);
+
+boolean removeAdvisor(Advisor advisor) throws AopConfigException;
+
+void removeAdvisor(int index) throws AopConfigException;
+
+boolean replaceAdvisor(Advisor a, Advisor b) throws AopConfigException;
+
+boolean isFrozen();
+```
+
+下面是一个例子，可以把 proxy 的 advisor 都取出来：
+
+```java
+Advised advised = (Advised) myObject;
+Advisor[] advisors = advised.getAdvisors();
+int oldAdvisorCount = advisors.length;
+System.out.println(oldAdvisorCount + " advisors");
+
+// Add an advice like an interceptor without a pointcut
+// Will match all proxied methods
+// Can use for interceptors, before, after returning or throws advice
+advised.addAdvice(new DebugInterceptor());
+
+// Add selective advice using a pointcut
+advised.addAdvisor(new DefaultPointcutAdvisor(mySpecialPointcut, myAdvice));
+
+assertEquals("Added two advisors", oldAdvisorCount + 2, advised.getAdvisors().length);
+```
+
+注意，以上操作还是会受 frozen 的影响。
+
+## 使用自动代理设施
+
+这种自动处理机制，很多系统都喜欢用。
+它的本质是对 bean definition 进行操作，使用 proxy 代理特定模式的 bean definition（targets eligible），依赖于 bean 后处理器的基础设施。
+
+### BeanNameAutoProxyCreator
+
+这是最常见的做法：
+
+```xml
+<bean class="org.springframework.aop.framework.autoproxy.BeanNameAutoProxyCreator">
+    <property name="beanNames" value="jdk*,onlyJdk"/>
+    <property name="interceptorNames">
+        <list>
+            <value>myInterceptor</value>
+        </list>
+    </property>
+</bean>
+```
+
+### DefaultAdvisorAutoProxyCreator
+
+这个东西会自动地把 advisor 和 target 关联起来，所有需要做的事情只是：
+
+ - 声明一系列 advisor。
+ - 声明一个 DefaultAdvisorAutoProxyCreator。
+
+从这里看出来 advisor 和 advice、interceptor 的显著区别，advisor 天然就有 pointcut，可以自动被识别。
+
+```java
+@Configuration
+public class AppConfig {
+    // 要创建代理的目标 Bean
+    @Bean
+    public UserService userService(){
+        return new UserServiceImpl();
+    }
+    // 创建Advice
+    @Bean
+    public Advice myMethodInterceptor(){
+        return new MyMethodInterceptor();
+    }
+    // 使用 Advice 创建Advisor
+    @Bean
+    public NameMatchMethodPointcutAdvisor nameMatchMethodPointcutAdvisor(){
+        NameMatchMethodPointcutAdvisor nameMatchMethodPointcutAdvisor=new NameMatchMethodPointcutAdvisor();
+        nameMatchMethodPointcutAdvisor.setMappedName("pri*");
+        nameMatchMethodPointcutAdvisor.setAdvice(myMethodInterceptor());
+        return nameMatchMethodPointcutAdvisor;
+    }
+    @Bean
+    public DefaultAdvisorAutoProxyCreator defaultAdvisorAutoProxyCreator() {
+        return new DefaultAdvisorAutoProxyCreator();
+    }
+}
+```
+
+## TargetSource API
+
+###  可热替换（hot-swappable）的 target source
+
+Spring 提供一个 API，可以让代理暴露自己的目标源：
+
+```xml
+<bean id="initialTarget" class="mycompany.OldTarget"/>
+
+<bean id="swapper" class="org.springframework.aop.target.HotSwappableTargetSource">
+    <constructor-arg ref="initialTarget"/>
+</bean>
+
+<bean id="swappable" class="org.springframework.aop.framework.ProxyFactoryBean">
+    <property name="targetSource" ref="swapper"/>
+</bean>
+```
+
+```java
+// 甚至这个接口还可以提供 swap target 的能力
+HotSwappableTargetSource swapper = (HotSwappableTargetSource) beanFactory.getBean("swapper");
+Object oldTarget = swapper.swap(newTarget);
+```
+
+### 池化 target source
+
+Spring 可以和各种 pooling api 配合使用，如以下的例子：
+
+```xml
+<bean id="businessObjectTarget" class="com.mycompany.MyBusinessObject"
+        scope="prototype">
+    ... properties omitted
+</bean>
+
+<!-- 依赖于 common-pools 2.3：org.apache.commons.pool2.ObjectPool -->
+<bean id="poolTargetSource" class="org.springframework.aop.target.CommonsPool2TargetSource">
+    <property name="targetBeanName" value="businessObjectTarget"/>
+    <property name="maxSize" value="25"/>
+</bean>
+
+<bean id="businessObject" class="org.springframework.aop.framework.ProxyFactoryBean">
+    <property name="targetSource" ref="poolTargetSource"/>
+    <property name="interceptorNames" value="myInterceptor"/>
+</bean>
+```
+
+相关的关键类是：org.springframework.aop.target.AbstractPoolingTargetSource。
+
+如果做了以下操作，可以把目标 bean 内部的 pool 配置读出来（比如对象池大小）：
+```xml
+<bean id="poolConfigAdvisor" class="org.springframework.beans.factory.config.MethodInvokingFactoryBean">
+    <property name="targetObject" ref="poolTargetSource"/>
+    <property name="targetMethod" value="getPoolingConfigMixin"/>
+</bean>
+```
+
+```java
+PoolingConfig conf = (PoolingConfig) beanFactory.getBean("businessObject");
+System.out.println("Max pool size is " + conf.getMaxSize());
+```
+
+能够被池化复用的对象，应该是无状态的对象，比如 EJB 对象，所以这个功能到底是不是真的有用，还要看业务场景。Spring 文档说无状态对象是线程安全的，只是把这个类型当做 transaction service 而已-如此说，prototype 和 singleton 又有什么区别。
+
+### 原型化 target source
+
+还有原型化的 target source api。原型化的 api 一般都很不好用，因为它意味着每次方法调用都会产生新对象。产生新对象的成本并不高，绑上（wiring）依赖的成本会很高。
+
+```xml
+<bean id="prototypeTargetSource" class="org.springframework.aop.target.PrototypeTargetSource">
+    <!-- prototype 的 bean-->
+    <property name="targetBeanName" ref="businessObjectTarget"/>
+</bean>
+```
+
+相当于 bean 还要被套在 TargetSource 里，所以 TargetSource 本质上只是一种 proxy 而已。
+
+### ThreadLocal target source
+
+```xml
+<bean id="threadlocalTargetSource" class="org.springframework.aop.target.ThreadLocalTargetSource">
+    <property name="targetBeanName" value="businessObjectTarget"/>
+</bean>
+```
+
+ThreadLocal 在多线程和多类加载器的场景下，会导致内存泄漏。
+
+### 定义新的 Advice 类型
+
+Spring 的 AOP 框架本身是支持类型扩展的，自定义的扩展可以通过一套 SPI 机制进行扩展。见[`org.springframework.aop.framework.adapter`][14]文档。
+
+**几个悬而未决的问题，怎样使用 aop 是最合理，最简单的 。各种机制的使用场景是什么？那么多复杂的内部机制来实现 advice，都不如直接用原生的 @Aspect 注解类的 advice 注解类来读写各种 joinpoint 甚至原型方法更简单。**
+
+```java
+```
+```java
+```
+```java
+```
+```java
+```
+```java
+```
+```java
+```
+```java
+```
+```java
+```
+```java
+```
+```java
+```
+<!--  -->
+
+
+
+MethodInvocation
+
+joinpoit - Spring 自己的方法闭包执行点
+
+到底有多少个 interceptor、advisor、advice？全局的状态要怎么维护？prototype、request scope、threadlocal？
+
+Spring 为什么要提供那么多的 mixin？
 
 # 一般的继承关系
 
@@ -695,13 +1845,13 @@ Advice（marker interface） -> Interceptor（marker interface） -> MethodInter
                 http://www.springframework.org/schema/tx/spring-tx-2.5.xsd
                 http://www.springframework.org/schema/aop
                 http://www.springframework.org/schema/aop/spring-aop-2.5.xsd">
-    
-    
+
     <context:component-scan base-package="com.xh.spring.aop">
         <context:include-filter type="annotation" 
                  expression="org.aspectj.lang.annotation.Aspect"/>
     </context:component-scan>
     
+    <!-- 强制使用 cglib proxy 的一种方法 -->
     <aop:aspectj-autoproxy proxy-target-class="true"/>
  </beans>
 ```
@@ -732,6 +1882,7 @@ public class AopNamespaceHandler extends NamespaceHandlerSupport {
 
 如果我们使用的 aop 配置是：
 ```xml
+<!-- 强制使用 cglib proxy 的一种方法 -->
 <aop:config proxy-target-class="true">
     <!-- other beans defined here... -->
 </aop:config>
@@ -751,7 +1902,7 @@ public class AopNamespaceHandler extends NamespaceHandlerSupport {
 ```java
 ```
 
-除此之外，还有其他我们常见的 xml 配置，而且他们对 proxy creator 的影响是相互的、全局的：
+除此之外，还有其他我们常见的 xml 配置，而且他们对 proxy creator 的影响是相互的、全局的（只要有一个指定 AspectJ，就会导致全局 AspectJ）：
 
 > To be clear, using proxy-target-class="true" on
 > <tx:annotation-driven/>, <aop:aspectj-autoproxy/>, or <aop:config/>
@@ -767,6 +1918,10 @@ public class AopNamespaceHandler extends NamespaceHandlerSupport {
 > does not implement any interfaces then a CGLIB proxy will be created.
 > 如果要代理的目标对象实现至少一个接口，则将使用JDK动态代理。 目标类型实现的所有接口都将被代理。
 > 如果目标对象未实现任何接口，则将创建CGLIB代理。
+
+proxy-target-class 的语义，恰好与 jdkDynamicProxy 的 proxy targe interface 的语义对应过来。
+
+我们可以不再显式地引入 cglib 相关的 jar，从 Spring 3.2 开始，cglib 相关的 jar 已经被自动打包进 spring-core.jar 里面了。
 
 # 连接点设计
 
@@ -822,29 +1977,13 @@ public Object preProcessQueryPattern(ProceedingJoinPoint pjp,
 }
 ```
 
-# Spring 的 AOP API
-https://docs.spring.io/spring/docs/current/spring-framework-reference/core.html#aop-api-advice-types
-
-基本来自 AOP 同盟
-
-MethodInvocation
-
-joinpoit - Spring 自己的方法闭包执行点
-
-
-
-# 如何在被代理的 bean 里调用 proxy
-
- 1. 要求暴露了代理，如`<aop:aspectj-autoproxy proxy-target-class="true" expose-proxy="true"/>`。
- 2. 使用`AopContext`：`((Service) AopContext.currentProxy()).callMethodB();`这里的callMethodB 是一个需要被代理增强的方法。
- 
-
 ```java
 ```
 
 参考：
 
-1. [《Introduction to Pointcut Expressions in Spring》][10]
+1. [《Introduction to Pointcut Expressions in Spring》][15]
+2. [《Spring @Configurable基本用法》][16]
 
 
   [1]: https://docs.spring.io/spring/docs/current/spring-framework-reference/core.html#aop-proxying
@@ -856,4 +1995,10 @@ joinpoit - Spring 自己的方法闭包执行点
   [7]: https://docs.spring.io/spring/docs/current/spring-framework-reference/core.html#aop-autoproxy
   [8]: https://docs.spring.io/spring/docs/current/spring-framework-reference/core.html#aop-api-advice-types
   [9]: https://docs.spring.io/spring/docs/current/spring-framework-reference/core.html#aop-spring-or-aspectj
-  [10]: https://www.baeldung.com/spring-aop-pointcut-tutorial#3-this-and-target
+  [10]: https://www.eclipse.org/aspectj/doc/released/devguide/antTasks.html
+  [11]: https://github.com/dsyer/spring-boot-aspectj
+  [12]: https://stackoverflow.com/questions/54749106/aspectj-ltw-weaving-not-working-with-spring-boot
+  [13]: https://www.roseindia.net/tutorial/spring/spring3/aop/controlflowpointcut.html
+  [14]: https://docs.spring.io/spring-framework/docs/5.2.5.RELEASE/javadoc-api/org/springframework/aop/framework/adapter/package-frame.html
+  [15]: https://www.baeldung.com/spring-aop-pointcut-tutorial#3-this-and-target
+  [16]: https://plentymore.github.io/2018/12/11/Spring-Configurable%E5%9F%BA%E6%9C%AC%E7%94%A8%E6%B3%95/
