@@ -34,7 +34,7 @@ Weaving: linking aspects with other application types or objects to create an ad
 
 Spring 默认使用 Java 动态代理，任何接口实现都可以被代理。但这种代理只能拦截接口方法。最终产生的 object 是 Proxy 的 instance 且 Interface 的 implementation。
 
-当一个对象没有实现一个接口的时候，Spring 会退而求其次，使用 cglib 代理。当然，我们也可以（实际上经常）[强制使用 cglib 代理][1]。这种代理可以拦截一切可以覆写的方法。最终产生的 object 是原类型的 subclass 的 instance。
+当一个对象没有实现一个接口的时候，Spring 会退而求其次，使用 cglib 代理。当然，我们也可以（实际上经常）[强制使用 cglib 代理][1]。这种代理可以拦截一切可以覆写的方法（而不只是接口声明的方法）。最终产生的 object 是原类型的 subclass 的 instance。
 
 It is perfectly possible to mix @AspectJ style aspects by using the auto-proxying support, schema-defined <aop:aspect> aspects, <aop:advisor> declared advisors, and even proxies and interceptors in other styles in the same configuration. All of these are implemented by using the same underlying support mechanism and can co-exist without any difficulty.
 
@@ -857,10 +857,7 @@ resources/org/aspectj/aop.xml
  *
  * 要给 jvm 加参数，而不是 application 加参数（application 的 main class 本身也是 jvm 的一个参数）：
  * $HOME
- * -javaagent:/Users/magicliang/.m2/repository/org/springframework/spring-instrument/5.2.5.RELEASE/spring-instrument-5.2.5.RELEASE.jar
- *
- * 不要使用这个参数，没用：
- * -Xset:weaveJavaxPackages=true -javaagent:/Users/magicliang/.m2/repository/org/aspectj/aspectjweaver/1.9.5/aspectjweaver-1.9.5.jar
+ *  * -javaagent:${HOME}/.m2/repository/org/aspectj/aspectjweaver/1.9.5/aspectjweaver-1.9.5.jar
  *
  * @author magicliang
  * <p>
@@ -969,7 +966,7 @@ public class AspectjLoadTimeWeaverApplication {
 }
 ```
 
-启动的时候加上这个 vm args：-javaagent:${HOME}/.m2/repository/org/springframework/spring-instrument/5.2.5.RELEASE/spring-instrument-5.2.5.RELEASE.jar
+启动的时候加上这个 vm args（暂时不要使用 spring-instrument.jar）： * -javaagent:${HOME}/.m2/repository/org/aspectj/aspectjweaver/1.9.5/aspectjweaver-1.9.5.jar
 
 只要有这个 javaagent，@Configurable + @EnableSpringConfigured 的自动注入就会生效 - 这个注解强依赖于这个 jave agent。
 
@@ -1657,6 +1654,8 @@ assertEquals("Added two advisors", oldAdvisorCount + 2, advised.getAdvisors().le
 </bean>
 ```
 
+它对于 bean 名称的模式匹配，应该可以被 PCD 完全取代。
+
 ### DefaultAdvisorAutoProxyCreator
 
 这个东西会自动地把 advisor 和 target 关联起来，所有需要做的事情只是：
@@ -1784,7 +1783,11 @@ ThreadLocal 在多线程和多类加载器的场景下，会导致内存泄漏�
 
 Spring 的 AOP 框架本身是支持类型扩展的，自定义的扩展可以通过一套 SPI 机制进行扩展。见[`org.springframework.aop.framework.adapter`][14]文档。
 
-**几个悬而未决的问题，怎样使用 aop 是最合理，最简单的 。各种机制的使用场景是什么？那么多复杂的内部机制来实现 advice，都不如直接用原生的 @Aspect 注解类的 advice 注解类来读写各种 joinpoint 甚至原型方法更简单。**
+# 总结一下 AOP 的初始化和使用方法
+
+![如何正确使用 AOP.png](如何正确使用 AOP.png)
+
+基本结论，越使用自动机制，越要使用 aspect；越是使用内部机制，越是使用 advisor。
 
 ```java
 ```
