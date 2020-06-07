@@ -694,7 +694,8 @@ public class Main {
         ProxyFactory factory = new ProxyFactory(new SimplePojo());
         factory.addInterface(Pojo.class);
         factory.addAdvice(new RetryAdvice());
-
+        
+        // 即使指定了 proxy-target-class，此处也可以得到一个 interface 的 proxy
         Pojo pojo = (Pojo) factory.getProxy();
         // this is a method call on the proxy!
         pojo.foo();
@@ -2031,6 +2032,9 @@ proxy-target-class 的语义，恰好与 jdkDynamicProxy 的 proxy targe interfa
 ### DefaultAopProxyFactory
 
 ```
+/**
+ * 通常我们不直接使用 ProxyConfig，而使用它的子类 AdvisedSupport
+ */
 @Override
 public AopProxy createAopProxy(AdvisedSupport config) throws AopConfigException {
     if (config.isOptimize() || config.isProxyTargetClass() || hasNoUserSuppliedProxyInterfaces(config)) {
@@ -2040,8 +2044,10 @@ public AopProxy createAopProxy(AdvisedSupport config) throws AopConfigException 
                     "Either an interface or a target is required for proxy creation.");
         }
         if (targetClass.isInterface() || Proxy.isProxyClass(targetClass)) {
+        // 代理类是可以直接 new 出来的
             return new JdkDynamicAopProxy(config);
         }
+        // 代理类是可以直接 new 出来的
         return new ObjenesisCglibAopProxy(config);
     }
     else {
@@ -2050,7 +2056,917 @@ public AopProxy createAopProxy(AdvisedSupport config) throws AopConfigException 
 }
 ```
 
+### ProxyFactory
 
+再看一个编程声明 ProxyFactory 的例子：
+
+```java
+public class ProxyFactoryTest {
+
+    public static void main(String[] args) {
+        // 1.创建代理工厂
+        ProxyFactory factory = new ProxyFactory();
+        // 2.设置目标对象
+        factory.setTarget(new ChromeBrowser());
+        // 3.设置代理实现接口
+        factory.setInterfaces(new Class[]{Browser.class});
+        // 4.添加前置增强
+        factory.addAdvice(new BrowserBeforeAdvice());
+        // 5.添加后置增强
+        factory.addAdvice(new BrowserAfterReturningAdvice());
+        // 6.获取代理对象
+        Browser browser = (Browser) factory.getProxy();
+        
+        browser.visitInternet();
+    }
+}
+```
+
+1. ProxyFactory的构造函数是空方法
+
+2. setTarget时，将target对象封装成TargetSource对象，而调用的setTargetSource是AdvisedSupport的方法。
+
+```java
+ public void setTarget(Object target) {
+    setTargetSource(new SingletonTargetSource(target));
+ }
+
+
+ public void setTargetSource(TargetSource targetSource) {
+    this.targetSource = (targetSource != null ? targetSource : EMPTY_TARGET_SOURCE);
+ }
+```
+
+3. setInterfaces，赋值的也是AdvisedSupport中的interfaces属性，但是是先清空再赋值。
+
+```java
+ /**
+  * Set the interfaces to be proxied.
+  */
+ public void setInterfaces(Class<?>... interfaces) {
+    Assert.notNull(interfaces, "Interfaces must not be null");
+    this.interfaces.clear();
+    for (Class<?> ifc : interfaces) {
+        addInterface(ifc);
+    }
+ }
+
+ /**
+  * Add a new proxied interface.
+  * [@param](https://my.oschina.net/u/2303379) intf the additional interface to proxy
+  */
+ public void addInterface(Class<?> intf) {
+    Assert.notNull(intf, "Interface must not be null");
+    if (!intf.isInterface()) {
+        throw new IllegalArgumentException("[" + intf.getName() + "] is not an interface");
+    }
+    if (!this.interfaces.contains(intf)) {
+        this.interfaces.add(intf);
+        adviceChanged();
+    }
+ }
+```
+
+4. addAdvice方法则是直接调用AdvisedSupport，将Advice封装成Advisor然后添加到advisors集合中。
+
+```java
+public void addAdvice(int pos, Advice advice) throws AopConfigException {
+    Assert.notNull(advice, "Advice must not be null");
+    // 引用增强单独处理
+    if (advice instanceof IntroductionInfo) {
+        // We don't need an IntroductionAdvisor for this kind of introduction:
+        // It's fully self-describing.
+        addAdvisor(pos, new DefaultIntroductionAdvisor(advice, (IntroductionInfo) advice));
+    }
+    // DynamicIntroductionAdvice不能单独添加，必须作为IntroductionAdvisor的一部分
+    else if (advice instanceof DynamicIntroductionAdvice) {
+        // We need an IntroductionAdvisor for this kind of introduction.
+        throw new AopConfigException("DynamicIntroductionAdvice may only be added as part of IntroductionAdvisor");
+    }
+    else {
+        addAdvisor(pos, new DefaultPointcutAdvisor(advice));
+    }
+ }
+
+ public void addAdvisor(int pos, Advisor advisor) throws AopConfigException {
+    if (advisor instanceof IntroductionAdvisor) {
+        validateIntroductionAdvisor((IntroductionAdvisor) advisor);
+    }
+    addAdvisorInternal(pos, advisor);
+ }
+
+ private void addAdvisorInternal(int pos, Advisor advisor) throws AopConfigException {
+    Assert.notNull(advisor, "Advisor must not be null");
+    if (isFrozen()) {
+        throw new AopConfigException("Cannot add advisor: Configuration is frozen.");
+    }
+    if (pos > this.advisors.size()) {
+        throw new IllegalArgumentException(
+                "Illegal position " + pos + " in advisor list with size " + this.advisors.size());
+    }
+    // 添加到advisor集合
+    this.advisors.add(pos, advisor);
+    updateAdvisorArray();
+    adviceChanged();
+ }
+```
+上述的Advice都被封装成DefaultPointcutAdvisor，可以看下其构造函数
+
+```java
+public DefaultPointcutAdvisor(Advice advice) {
+    this(Pointcut.TRUE, advice);
+}
+```
+
+Pointcut.TRUE表示支持任何切入点。
+
+5. 创建代理
+准备工作做完了，直接通过getProxy方法获取代理对象。
+
+```java
+public Object getProxy() {
+    // 所有的 proxy（而不是 bean），都是 aop proxy，没有其他 proxy
+    return createAopProxy().getProxy();
+}
+```
+
+这里的createAopProxy()返回的是AopProxy类型，方法是 final，并且加了锁操作。
+
+```java
+protected final synchronized AopProxy createAopProxy() {
+    if (!this.active) {
+        activate();
+    }
+    return getAopProxyFactory().createAopProxy(this);
+}
+```
+
+注意，生成 proxy 的方法显示，ProxyFactory 自己还委托 AopProxyFactory，生成了AopProxy 以后，还要再取一层 Proxy。
+
+可以清晰地看出，AopProxyFactory->AopProxy->Proxy之间的结构。
+
+缺省的 AopProxyFactory 是 DefaultAopProxyFactory，它的关键方法是：
+
+```java
+public AopProxy createAopProxy(AdvisedSupport config) throws AopConfigException {
+    // optimize=true或proxyTargetClass=true或接口集合为空，或者指定了要代理目标类
+    if (config.isOptimize() || config.isProxyTargetClass() || hasNoUserSuppliedProxyInterfaces(config)) {
+        Class<?> targetClass = config.getTargetClass();
+        if (targetClass == null) {
+            throw new AopConfigException("TargetSource cannot determine target class: " +
+                    "Either an interface or a target is required for proxy creation.");
+        }
+        // 目标 class 为接口时可能生成 JdkDynamicAopProxy
+        if (targetClass.isInterface()) {
+            return new JdkDynamicAopProxy(config);
+        }
+        // 但绝大多数情况下，生成的是 ObjenesisCglibAopProxy
+        return new ObjenesisCglibAopProxy(config);
+    }
+    else {
+        return new JdkDynamicAopProxy(config);
+    }
+}
+```
+
+JdkDynamicAopProxy 的关键代码是：
+
+```java
+// 保存 advisorChainFactory（有缓存，能够生成或者获取缓存里的 interceptor 列表）、interfaces、advisors、最重要的 targetSource 和其他 proxy 配置
+/** Config used to configure this proxy */
+    private final AdvisedSupport advised;
+    
+/**
+* 获取缺省类加载器
+*/
+public static ClassLoader getDefaultClassLoader() {
+        ClassLoader cl = null;
+        try {
+            // 首先还是取线程自己有的类加载器。
+            cl = Thread.currentThread().getContextClassLoader();
+        }
+        catch (Throwable ex) {
+            // Cannot access thread context ClassLoader - falling back...
+        }
+        if (cl == null) {
+            // No thread context class loader -> use class loader of this class.
+            // 否则，获取本类的类加载器
+            cl = ClassUtils.class.getClassLoader();
+            if (cl == null) {
+                // getClassLoader() returning null indicates the bootstrap ClassLoader
+                try {
+                    // 获取当前的系统类加载器，这肯定就是 bootstrap ClassLoader 了，bootstrap不可能没有
+                    cl = ClassLoader.getSystemClassLoader();
+                }
+                catch (Throwable ex) {
+                    // Cannot access system ClassLoader - oh well, maybe the caller can live with null...
+                }
+            }
+        }
+        return cl;
+    }
+    
+@Override
+    public Object getProxy() {
+        // 由工具类获取类加载器
+        return getProxy(ClassUtils.getDefaultClassLoader());
+    }
+
+    @Override
+    public Object getProxy(ClassLoader classLoader) {
+        if (logger.isDebugEnabled()) {
+            logger.debug("Creating JDK dynamic proxy: target source is " + this.advised.getTargetSource());
+        }
+        
+        Class<?>[] proxiedInterfaces = AopProxyUtils.completeProxiedInterfaces(this.advised, true);
+        findDefinedEqualsAndHashCodeMethods(proxiedInterfaces);
+        return Proxy.newProxyInstance(classLoader, proxiedInterfaces, this);
+    }
+
+
+/**
+        经典的 InvocationHanlder 实现
+     * Implementation of {@code InvocationHandler.invoke}.
+     * <p>Callers will see exactly the exception thrown by the target,
+     * unless a hook method throws an exception.
+     */
+    @Override
+    public Object invoke(Object proxy, Method method, Object[] args) throws Throwable {
+        MethodInvocation invocation;
+        Object oldProxy = null;
+        boolean setProxyContext = false;
+
+        TargetSource targetSource = this.advised.targetSource;
+        Class<?> targetClass = null;
+        Object target = null;
+
+        try {
+            // 如果相关规范是求等，就求等
+            if (!this.equalsDefined && AopUtils.isEqualsMethod(method)) {
+                // The target does not implement the equals(Object) method itself.
+                return equals(args[0]);
+            }
+            else if (!this.hashCodeDefined && AopUtils.isHashCodeMethod(method)) {
+                // 否则，求散列值
+                // The target does not implement the hashCode() method itself.
+                return hashCode();
+            }
+             // 如果方法的声明类型是包装器代理（这种代理拥有一个方法，可以返回最底层的“根（ultimate）被代理对象”），则调用唯一的方法的目的就是获取被代理对象，就试图获取被代理对象
+            else if (method.getDeclaringClass() == DecoratingProxy.class) {
+                // There is only getDecoratedClass() declared -> dispatch to proxy config.
+                return
+                // getDecoratedClass() 等价于这个调用，目的都是获取目标类
+                AopProxyUtils.ultimateTargetClass(this.advised);
+            }
+            // 如果调用的是 Advised 的派生接口，且本类的 advised作为 proxy config 是不透明的
+            else if (!this.advised.opaque && method.getDeclaringClass().isInterface() &&
+                    method.getDeclaringClass().isAssignableFrom(Advised.class)) {
+                // 使用反射调用目标方法
+                // Service invocations on ProxyConfig with the proxy config...
+                return AopUtils.invokeJoinpointUsingReflection(this.advised, method, args);
+            }
+            // 进入主要流程，这里才是大多数情况下的主要流程
+            Object retVal;
+            // 先设置当前的代理进入上下文
+            if (this.advised.exposeProxy) {
+                // Make invocation available if necessary.
+                oldProxy = AopContext.setCurrentProxy(proxy);
+                setProxyContext = true;
+            }
+            
+            // 获取目标，尽可能晚获取目标对象，减少对对象的拥有时间以优化对象池的性能
+            // May be null. Get as late as possible to minimize the time we "own" the target,
+            // in case it comes from a pool.
+            target = targetSource.getTarget();
+            if (target != null) {
+                targetClass = target.getClass();
+            }
+            
+            // 获取拦截器链
+            // Get the interception chain for this method.
+            List<Object> chain = this.advised.getInterceptorsAndDynamicInterceptionAdvice(method, targetClass);
+            
+            // 如果我们没有任何的增强，则我们可以直接调用目标方法，不用制造 MethodInvocation 以制造性能问题
+            // Check whether we have any advice. If we don't, we can fallback on direct
+            // reflective invocation of the target, and avoid creating a MethodInvocation.
+            if (chain.isEmpty()) {
+                // We can skip creating a MethodInvocation: just invoke the target directly
+                // Note that the final invoker must be an InvokerInterceptor so we know it does
+                // nothing but a reflective operation on the target, and no hot swapping or fancy proxying.
+                // 如果有 varargs 相关的场景，适配 args 的数组的最后一个元素为方法的目标类型
+                Object[] argsToUse = AopProxyUtils.adaptArgumentsIfNecessary(method, args);
+                // 使用反射调用目标方法
+                retVal = AopUtils.invokeJoinpointUsingReflection(target, method, argsToUse);
+            }
+            else {
+                // 制造一个方法调用- 即 MethodInvocation
+                // We need to create a method invocation...
+                invocation = new ReflectiveMethodInvocation(proxy, target, method, args, targetClass, chain);
+                // Proceed to the joinpoint through the interceptor chain.
+                // 对它进行调用
+                retVal = invocation.proceed();
+            }
+            
+            // 如果返回值是当前 proxy，返回 this 作为额外处理。对流式调用特别有用
+            // Massage return value if necessary.
+            Class<?> returnType = method.getReturnType();
+            if (retVal != null && retVal == target &&
+                    returnType != Object.class && returnType.isInstance(proxy) &&
+                    !RawTargetAccess.class.isAssignableFrom(method.getDeclaringClass())) {
+                // Special case: it returned "this" and the return type of the method
+                // is type-compatible. Note that we can't help if the target sets
+                // a reference to itself in another returned object.
+                retVal = proxy;
+            }
+            // 如果返回值为空而方法不期待空，则抛出异常
+            else if (retVal == null && returnType != Void.TYPE && returnType.isPrimitive()) {
+                throw new AopInvocationException(
+                        "Null return value from advice does not match primitive return type for: " + method);
+            }
+            return retVal;
+        }
+        finally {
+            // 确定 targetSource 是不是静态的（即每次都返回同一个对象）
+            if (target != null && !targetSource.isStatic()) {
+                // Must have come from TargetSource.
+                // 如果是则释放 target
+                targetSource.releaseTarget(target);
+            }
+            if (setProxyContext) {
+                // Restore old proxy.
+                // 运用备忘录还原老的代理
+                AopContext.setCurrentProxy(oldProxy);
+            }
+        }
+    }
+```
+
+DefaultAdvisorChainFactory 的内容如下：
+
+```java
+/**
+ * 通过遍历所有的Advisor切面，如果是PointcutAdvisor，则提取出Pointcut，
+ * 然后匹配当前类和方法是否适用。另外通过AdvisorAdapterRegistry切面
+ * 注册适配器将Advisor中的Advice都封装成MethodInteceptor以方便形成拦
+ * 截器链。
+ */
+@Override
+    public List<Object> getInterceptorsAndDynamicInterceptionAdvice(
+            Advised config, Method method, Class<?> targetClass) {
+
+        // This is somewhat tricky... We have to process introductions first,
+        // but we need to preserve order in the ultimate list.
+        List<Object> interceptorList = new ArrayList<Object>(config.getAdvisors().length);
+        Class<?> actualClass = (targetClass != null ? targetClass : method.getDeclaringClass());
+        boolean hasIntroductions = hasMatchingIntroductions(config, actualClass);
+        AdvisorAdapterRegistry registry = GlobalAdvisorAdapterRegistry.getInstance();
+
+        for (Advisor advisor : config.getAdvisors()) {
+            if (advisor instanceof PointcutAdvisor) {
+                // Add it conditionally.
+                PointcutAdvisor pointcutAdvisor = (PointcutAdvisor) advisor;
+                if (config.isPreFiltered() || pointcutAdvisor.getPointcut().getClassFilter().matches(actualClass)) {
+                    MethodInterceptor[] interceptors = registry.getInterceptors(advisor);
+                    MethodMatcher mm = pointcutAdvisor.getPointcut().getMethodMatcher();
+                    if (MethodMatchers.matches(mm, method, actualClass, hasIntroductions)) {
+                        if (mm.isRuntime()) {
+                            // Creating a new object instance in the getInterceptors() method
+                            // isn't a problem as we normally cache created chains.
+                            for (MethodInterceptor interceptor : interceptors) {
+                                interceptorList.add(new InterceptorAndDynamicMethodMatcher(interceptor, mm));
+                            }
+                        }
+                        else {
+                            interceptorList.addAll(Arrays.asList(interceptors));
+                        }
+                    }
+                }
+            }
+            else if (advisor instanceof IntroductionAdvisor) {
+                IntroductionAdvisor ia = (IntroductionAdvisor) advisor;
+                if (config.isPreFiltered() || ia.getClassFilter().matches(actualClass)) {
+                    Interceptor[] interceptors = registry.getInterceptors(advisor);
+                    interceptorList.addAll(Arrays.asList(interceptors));
+                }
+            }
+            else {
+                Interceptor[] interceptors = registry.getInterceptors(advisor);
+                interceptorList.addAll(Arrays.asList(interceptors));
+            }
+        }
+
+        return interceptorList;
+    }
+```
+
+AopUtils 的内容如下：
+
+```java
+public abstract class AopUtils {
+
+    /**
+     * Check whether the given object is a JDK dynamic proxy or a CGLIB proxy.
+     * <p>This method additionally checks if the given object is an instance
+     * of {@link SpringProxy}.
+     * @param object the object to check
+     * @see #isJdkDynamicProxy
+     * @see #isCglibProxy
+     */
+    public static boolean isAopProxy(Object object) {
+        return (object instanceof SpringProxy &&
+                (Proxy.isProxyClass(object.getClass()) || ClassUtils.isCglibProxyClass(object.getClass())));
+    }
+
+    /**
+     * Check whether the given object is a JDK dynamic proxy.
+     * <p>This method goes beyond the implementation of
+     * {@link Proxy#isProxyClass(Class)} by additionally checking if the
+     * given object is an instance of {@link SpringProxy}.
+     * @param object the object to check
+     * @see java.lang.reflect.Proxy#isProxyClass
+     */
+    public static boolean isJdkDynamicProxy(Object object) {
+        return (object instanceof SpringProxy && Proxy.isProxyClass(object.getClass()));
+    }
+
+    /**
+     * Check whether the given object is a CGLIB proxy.
+     * <p>This method goes beyond the implementation of
+     * {@link ClassUtils#isCglibProxy(Object)} by additionally checking if
+     * the given object is an instance of {@link SpringProxy}.
+     * @param object the object to check
+     * @see ClassUtils#isCglibProxy(Object)
+     */
+    public static boolean isCglibProxy(Object object) {
+        return (object instanceof SpringProxy && ClassUtils.isCglibProxy(object));
+    }
+
+    /**
+     * Determine the target class of the given bean instance which might be an AOP proxy.
+     * <p>Returns the target class for an AOP proxy or the plain class otherwise.
+     * @param candidate the instance to check (might be an AOP proxy)
+     * @return the target class (or the plain class of the given object as fallback;
+     * never {@code null})
+     * @see org.springframework.aop.TargetClassAware#getTargetClass()
+     * @see org.springframework.aop.framework.AopProxyUtils#ultimateTargetClass(Object)
+     */
+    public static Class<?> getTargetClass(Object candidate) {
+        Assert.notNull(candidate, "Candidate object must not be null");
+        Class<?> result = null;
+        if (candidate instanceof TargetClassAware) {
+            result = ((TargetClassAware) candidate).getTargetClass();
+        }
+        if (result == null) {
+            result = (isCglibProxy(candidate) ? candidate.getClass().getSuperclass() : candidate.getClass());
+        }
+        return result;
+    }
+
+    /**
+     * Select an invocable method on the target type: either the given method itself
+     * if actually exposed on the target type, or otherwise a corresponding method
+     * on one of the target type's interfaces or on the target type itself.
+     * @param method the method to check
+     * @param targetType the target type to search methods on (typically an AOP proxy)
+     * @return a corresponding invocable method on the target type
+     * @throws IllegalStateException if the given method is not invocable on the given
+     * target type (typically due to a proxy mismatch)
+     * @since 4.3
+     * @see MethodIntrospector#selectInvocableMethod(Method, Class)
+     */
+    public static Method selectInvocableMethod(Method method, Class<?> targetType) {
+        Method methodToUse = MethodIntrospector.selectInvocableMethod(method, targetType);
+        if (Modifier.isPrivate(methodToUse.getModifiers()) && !Modifier.isStatic(methodToUse.getModifiers()) &&
+                SpringProxy.class.isAssignableFrom(targetType)) {
+            throw new IllegalStateException(String.format(
+                    "Need to invoke method '%s' found on proxy for target class '%s' but cannot " +
+                    "be delegated to target bean. Switch its visibility to package or protected.",
+                    method.getName(), method.getDeclaringClass().getSimpleName()));
+        }
+        return methodToUse;
+    }
+
+    /**
+     * Determine whether the given method is an "equals" method.
+     * @see java.lang.Object#equals
+     */
+    public static boolean isEqualsMethod(Method method) {
+        return ReflectionUtils.isEqualsMethod(method);
+    }
+
+    /**
+     * Determine whether the given method is a "hashCode" method.
+     * @see java.lang.Object#hashCode
+     */
+    public static boolean isHashCodeMethod(Method method) {
+        return ReflectionUtils.isHashCodeMethod(method);
+    }
+
+    /**
+     * Determine whether the given method is a "toString" method.
+     * @see java.lang.Object#toString()
+     */
+    public static boolean isToStringMethod(Method method) {
+        return ReflectionUtils.isToStringMethod(method);
+    }
+
+    /**
+     * Determine whether the given method is a "finalize" method.
+     * @see java.lang.Object#finalize()
+     */
+    public static boolean isFinalizeMethod(Method method) {
+        return (method != null && method.getName().equals("finalize") &&
+                method.getParameterTypes().length == 0);
+    }
+
+    /**
+     * Given a method, which may come from an interface, and a target class used
+     * in the current AOP invocation, find the corresponding target method if there
+     * is one. E.g. the method may be {@code IFoo.bar()} and the target class
+     * may be {@code DefaultFoo}. In this case, the method may be
+     * {@code DefaultFoo.bar()}. This enables attributes on that method to be found.
+     * <p><b>NOTE:</b> In contrast to {@link org.springframework.util.ClassUtils#getMostSpecificMethod},
+     * this method resolves Java 5 bridge methods in order to retrieve attributes
+     * from the <i>original</i> method definition.
+     * @param method the method to be invoked, which may come from an interface
+     * @param targetClass the target class for the current invocation.
+     * May be {@code null} or may not even implement the method.
+     * @return the specific target method, or the original method if the
+     * {@code targetClass} doesn't implement it or is {@code null}
+     * @see org.springframework.util.ClassUtils#getMostSpecificMethod
+     */
+    public static Method getMostSpecificMethod(Method method, Class<?> targetClass) {
+        Method resolvedMethod = ClassUtils.getMostSpecificMethod(method, targetClass);
+        // If we are dealing with method with generic parameters, find the original method.
+        return BridgeMethodResolver.findBridgedMethod(resolvedMethod);
+    }
+
+    /**
+     * Can the given pointcut apply at all on the given class?
+     * <p>This is an important test as it can be used to optimize
+     * out a pointcut for a class.
+     * @param pc the static or dynamic pointcut to check
+     * @param targetClass the class to test
+     * @return whether the pointcut can apply on any method
+     */
+    public static boolean canApply(Pointcut pc, Class<?> targetClass) {
+        return canApply(pc, targetClass, false);
+    }
+
+    /**
+     * Can the given pointcut apply at all on the given class?
+     * <p>This is an important test as it can be used to optimize
+     * out a pointcut for a class.
+     * @param pc the static or dynamic pointcut to check
+     * @param targetClass the class to test
+     * @param hasIntroductions whether or not the advisor chain
+     * for this bean includes any introductions
+     * @return whether the pointcut can apply on any method
+     */
+    public static boolean canApply(Pointcut pc, Class<?> targetClass, boolean hasIntroductions) {
+        Assert.notNull(pc, "Pointcut must not be null");
+        if (!pc.getClassFilter().matches(targetClass)) {
+            return false;
+        }
+
+        MethodMatcher methodMatcher = pc.getMethodMatcher();
+        if (methodMatcher == MethodMatcher.TRUE) {
+            // No need to iterate the methods if we're matching any method anyway...
+            return true;
+        }
+
+        IntroductionAwareMethodMatcher introductionAwareMethodMatcher = null;
+        if (methodMatcher instanceof IntroductionAwareMethodMatcher) {
+            introductionAwareMethodMatcher = (IntroductionAwareMethodMatcher) methodMatcher;
+        }
+
+        Set<Class<?>> classes = new LinkedHashSet<Class<?>>(ClassUtils.getAllInterfacesForClassAsSet(targetClass));
+        classes.add(targetClass);
+        for (Class<?> clazz : classes) {
+            Method[] methods = ReflectionUtils.getAllDeclaredMethods(clazz);
+            for (Method method : methods) {
+                if ((introductionAwareMethodMatcher != null &&
+                        introductionAwareMethodMatcher.matches(method, targetClass, hasIntroductions)) ||
+                        methodMatcher.matches(method, targetClass)) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Can the given advisor apply at all on the given class?
+     * This is an important test as it can be used to optimize
+     * out a advisor for a class.
+     * @param advisor the advisor to check
+     * @param targetClass class we're testing
+     * @return whether the pointcut can apply on any method
+     */
+    public static boolean canApply(Advisor advisor, Class<?> targetClass) {
+        return canApply(advisor, targetClass, false);
+    }
+
+    /**
+     * Can the given advisor apply at all on the given class?
+     * <p>This is an important test as it can be used to optimize out a advisor for a class.
+     * This version also takes into account introductions (for IntroductionAwareMethodMatchers).
+     * @param advisor the advisor to check
+     * @param targetClass class we're testing
+     * @param hasIntroductions whether or not the advisor chain for this bean includes
+     * any introductions
+     * @return whether the pointcut can apply on any method
+     */
+    public static boolean canApply(Advisor advisor, Class<?> targetClass, boolean hasIntroductions) {
+        if (advisor instanceof IntroductionAdvisor) {
+            return ((IntroductionAdvisor) advisor).getClassFilter().matches(targetClass);
+        }
+        else if (advisor instanceof PointcutAdvisor) {
+            PointcutAdvisor pca = (PointcutAdvisor) advisor;
+            return canApply(pca.getPointcut(), targetClass, hasIntroductions);
+        }
+        else {
+            // It doesn't have a pointcut so we assume it applies.
+            return true;
+        }
+    }
+
+    /**
+     * Determine the sublist of the {@code candidateAdvisors} list
+     * that is applicable to the given class.
+     * @param candidateAdvisors the Advisors to evaluate
+     * @param clazz the target class
+     * @return sublist of Advisors that can apply to an object of the given class
+     * (may be the incoming List as-is)
+     */
+    public static List<Advisor> findAdvisorsThatCanApply(List<Advisor> candidateAdvisors, Class<?> clazz) {
+        if (candidateAdvisors.isEmpty()) {
+            return candidateAdvisors;
+        }
+        List<Advisor> eligibleAdvisors = new LinkedList<Advisor>();
+        for (Advisor candidate : candidateAdvisors) {
+            if (candidate instanceof IntroductionAdvisor && canApply(candidate, clazz)) {
+                eligibleAdvisors.add(candidate);
+            }
+        }
+        boolean hasIntroductions = !eligibleAdvisors.isEmpty();
+        for (Advisor candidate : candidateAdvisors) {
+            if (candidate instanceof IntroductionAdvisor) {
+                // already processed
+                continue;
+            }
+            if (canApply(candidate, clazz, hasIntroductions)) {
+                eligibleAdvisors.add(candidate);
+            }
+        }
+        return eligibleAdvisors;
+    }
+
+    /**
+     * Invoke the given target via reflection, as part of an AOP method invocation.
+     * @param target the target object
+     * @param method the method to invoke
+     * @param args the arguments for the method
+     * @return the invocation result, if any
+     * @throws Throwable if thrown by the target method
+     * @throws org.springframework.aop.AopInvocationException in case of a reflection error
+     */
+    public static Object invokeJoinpointUsingReflection(Object target, Method method, Object[] args)
+            throws Throwable {
+
+        // Use reflection to invoke the method.
+        try {
+            ReflectionUtils.makeAccessible(method);
+            return method.invoke(target, args);
+        }
+        catch (InvocationTargetException ex) {
+            // Invoked method threw a checked exception.
+            // We must rethrow it. The client won't see the interceptor.
+            throw ex.getTargetException();
+        }
+        catch (IllegalArgumentException ex) {
+            throw new AopInvocationException("AOP configuration seems to be invalid: tried calling method [" +
+                    method + "] on target [" + target + "]", ex);
+        }
+        catch (IllegalAccessException ex) {
+            throw new AopInvocationException("Could not access method [" + method + "]", ex);
+        }
+    }
+
+}
+```
+
+AopProxyUtils 的内容如下：
+
+```java
+public abstract class AopProxyUtils {
+
+    /**
+     * Obtain the singleton target object behind the given proxy, if any.
+     * @param candidate the (potential) proxy to check
+     * @return the singleton target object managed in a {@link SingletonTargetSource},
+     * or {@code null} in any other case (not a proxy, not an existing singleton target)
+     * @since 4.3.8
+     * @see Advised#getTargetSource()
+     * @see SingletonTargetSource#getTarget()
+     */
+    public static Object getSingletonTarget(Object candidate) {
+        if (candidate instanceof Advised) {
+            TargetSource targetSource = ((Advised) candidate).getTargetSource();
+            if (targetSource instanceof SingletonTargetSource) {
+                return ((SingletonTargetSource) targetSource).getTarget();
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Determine the ultimate target class of the given bean instance, traversing
+     * not only a top-level proxy but any number of nested proxies as well &mdash;
+     * as long as possible without side effects, that is, just for singleton targets.
+     * @param candidate the instance to check (might be an AOP proxy)
+     * @return the ultimate target class (or the plain class of the given
+     * object as fallback; never {@code null})
+     * @see org.springframework.aop.TargetClassAware#getTargetClass()
+     * @see Advised#getTargetSource()
+     */
+    public static Class<?> ultimateTargetClass(Object candidate) {
+        Assert.notNull(candidate, "Candidate object must not be null");
+        Object current = candidate;
+        Class<?> result = null;
+        while (current instanceof TargetClassAware) {
+            result = ((TargetClassAware) current).getTargetClass();
+            current = getSingletonTarget(current);
+        }
+        if (result == null) {
+            result = (AopUtils.isCglibProxy(candidate) ? candidate.getClass().getSuperclass() : candidate.getClass());
+        }
+        return result;
+    }
+
+    /**
+     * Determine the complete set of interfaces to proxy for the given AOP configuration.
+     * <p>This will always add the {@link Advised} interface unless the AdvisedSupport's
+     * {@link AdvisedSupport#setOpaque "opaque"} flag is on. Always adds the
+     * {@link org.springframework.aop.SpringProxy} marker interface.
+     * @param advised the proxy config
+     * @return the complete set of interfaces to proxy
+     * @see SpringProxy
+     * @see Advised
+     */
+    public static Class<?>[] completeProxiedInterfaces(AdvisedSupport advised) {
+        return completeProxiedInterfaces(advised, false);
+    }
+
+    /**
+     * Determine the complete set of interfaces to proxy for the given AOP configuration.
+     * <p>This will always add the {@link Advised} interface unless the AdvisedSupport's
+     * {@link AdvisedSupport#setOpaque "opaque"} flag is on. Always adds the
+     * {@link org.springframework.aop.SpringProxy} marker interface.
+     * @param advised the proxy config
+     * @param decoratingProxy whether to expose the {@link DecoratingProxy} interface
+     * @return the complete set of interfaces to proxy
+     * @since 4.3
+     * @see SpringProxy
+     * @see Advised
+     * @see DecoratingProxy
+     */
+    static Class<?>[] completeProxiedInterfaces(AdvisedSupport advised, boolean decoratingProxy) {
+        Class<?>[] specifiedInterfaces = advised.getProxiedInterfaces();
+        if (specifiedInterfaces.length == 0) {
+            // No user-specified interfaces: check whether target class is an interface.
+            Class<?> targetClass = advised.getTargetClass();
+            if (targetClass != null) {
+                if (targetClass.isInterface()) {
+                    advised.setInterfaces(targetClass);
+                }
+                else if (Proxy.isProxyClass(targetClass)) {
+                    advised.setInterfaces(targetClass.getInterfaces());
+                }
+                specifiedInterfaces = advised.getProxiedInterfaces();
+            }
+        }
+        boolean addSpringProxy = !advised.isInterfaceProxied(SpringProxy.class);
+        boolean addAdvised = !advised.isOpaque() && !advised.isInterfaceProxied(Advised.class);
+        boolean addDecoratingProxy = (decoratingProxy && !advised.isInterfaceProxied(DecoratingProxy.class));
+        int nonUserIfcCount = 0;
+        if (addSpringProxy) {
+            nonUserIfcCount++;
+        }
+        if (addAdvised) {
+            nonUserIfcCount++;
+        }
+        if (addDecoratingProxy) {
+            nonUserIfcCount++;
+        }
+        Class<?>[] proxiedInterfaces = new Class<?>[specifiedInterfaces.length + nonUserIfcCount];
+        System.arraycopy(specifiedInterfaces, 0, proxiedInterfaces, 0, specifiedInterfaces.length);
+        int index = specifiedInterfaces.length;
+        if (addSpringProxy) {
+            proxiedInterfaces[index] = SpringProxy.class;
+            index++;
+        }
+        if (addAdvised) {
+            proxiedInterfaces[index] = Advised.class;
+            index++;
+        }
+        if (addDecoratingProxy) {
+            proxiedInterfaces[index] = DecoratingProxy.class;
+        }
+        return proxiedInterfaces;
+    }
+
+    /**
+     * Extract the user-specified interfaces that the given proxy implements,
+     * i.e. all non-Advised interfaces that the proxy implements.
+     * @param proxy the proxy to analyze (usually a JDK dynamic proxy)
+     * @return all user-specified interfaces that the proxy implements,
+     * in the original order (never {@code null} or empty)
+     * @see Advised
+     */
+    public static Class<?>[] proxiedUserInterfaces(Object proxy) {
+        Class<?>[] proxyInterfaces = proxy.getClass().getInterfaces();
+        int nonUserIfcCount = 0;
+        if (proxy instanceof SpringProxy) {
+            nonUserIfcCount++;
+        }
+        if (proxy instanceof Advised) {
+            nonUserIfcCount++;
+        }
+        if (proxy instanceof DecoratingProxy) {
+            nonUserIfcCount++;
+        }
+        Class<?>[] userInterfaces = new Class<?>[proxyInterfaces.length - nonUserIfcCount];
+        System.arraycopy(proxyInterfaces, 0, userInterfaces, 0, userInterfaces.length);
+        Assert.notEmpty(userInterfaces, "JDK proxy must implement one or more interfaces");
+        return userInterfaces;
+    }
+
+    /**
+     * Check equality of the proxies behind the given AdvisedSupport objects.
+     * Not the same as equality of the AdvisedSupport objects:
+     * rather, equality of interfaces, advisors and target sources.
+     */
+    public static boolean equalsInProxy(AdvisedSupport a, AdvisedSupport b) {
+        return (a == b ||
+                (equalsProxiedInterfaces(a, b) && equalsAdvisors(a, b) && a.getTargetSource().equals(b.getTargetSource())));
+    }
+
+    /**
+     * Check equality of the proxied interfaces behind the given AdvisedSupport objects.
+     */
+    public static boolean equalsProxiedInterfaces(AdvisedSupport a, AdvisedSupport b) {
+        return Arrays.equals(a.getProxiedInterfaces(), b.getProxiedInterfaces());
+    }
+
+    /**
+     * Check equality of the advisors behind the given AdvisedSupport objects.
+     */
+    public static boolean equalsAdvisors(AdvisedSupport a, AdvisedSupport b) {
+        return Arrays.equals(a.getAdvisors(), b.getAdvisors());
+    }
+
+
+    /**
+     * Adapt the given arguments to the target signature in the given method,
+     * if necessary: in particular, if a given vararg argument array does not
+     * match the array type of the declared vararg parameter in the method.
+     * @param method the target method
+     * @param arguments the given arguments
+     * @return a cloned argument array, or the original if no adaptation is needed
+     * @since 4.2.3
+     */
+    static Object[] adaptArgumentsIfNecessary(Method method, Object... arguments) {
+        if (method.isVarArgs() && !ObjectUtils.isEmpty(arguments)) {
+            Class<?>[] paramTypes = method.getParameterTypes();
+            if (paramTypes.length == arguments.length) {
+                int varargIndex = paramTypes.length - 1;
+                Class<?> varargType = paramTypes[varargIndex];
+                if (varargType.isArray()) {
+                    Object varargArray = arguments[varargIndex];
+                    if (varargArray instanceof Object[] && !varargType.isInstance(varargArray)) {
+                        Object[] newArguments = new Object[arguments.length];
+                        System.arraycopy(arguments, 0, newArguments, 0, varargIndex);
+                        Class<?> targetElementType = varargType.getComponentType();
+                        int varargLength = Array.getLength(varargArray);
+                        Object newVarargArray = Array.newInstance(targetElementType, varargLength);
+                        System.arraycopy(varargArray, 0, newVarargArray, 0, varargLength);
+                        newArguments[varargIndex] = newVarargArray;
+                        return newArguments;
+                    }
+                }
+            }
+        }
+        return arguments;
+    }
+
+}
+```
+```java
+```
+```java
+```
 ```java
 ```
 ```java
