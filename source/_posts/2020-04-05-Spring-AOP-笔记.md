@@ -2044,7 +2044,7 @@ public AopProxy createAopProxy(AdvisedSupport config) throws AopConfigException 
                     "Either an interface or a target is required for proxy creation.");
         }
         if (targetClass.isInterface() || Proxy.isProxyClass(targetClass)) {
-        // 代理类是可以直接 new 出来的
+        // 代理类是可以直接 new 出来的，即 AdvisedSupport 带进来的 target 是接口或者 proxy（比如 @Bean 的方法，或者 com.sun.proxy$Proxy1，会导致即使配置了 ProxyTargetClass，也会生成基于接口的的 proxy）
             return new JdkDynamicAopProxy(config);
         }
         // 代理类是可以直接 new 出来的
@@ -2208,6 +2208,7 @@ protected final synchronized AopProxy createAopProxy() {
 缺省的 AopProxyFactory 是 DefaultAopProxyFactory，它的关键方法是：
 
 ```java
+// 这个构造器代表了经典的耦合关系，AopProxy 靠 AdvisedSupport 持有真实对象，请求都委托给它。这也体现了 Spring 的设计思想，proxy 持有 interceptor，proxy 或者 interceptor 持有或者继承 xxxSupport。具体的实现能力由 xxxSupport 支持，但 xxxSupport 不会被直接使用，各种外部类型自己实现自己场景下的接入方法。
 public AopProxy createAopProxy(AdvisedSupport config) throws AopConfigException {
     // optimize=true或proxyTargetClass=true或接口集合为空，或者指定了要代理目标类
     if (config.isOptimize() || config.isProxyTargetClass() || hasNoUserSuppliedProxyInterfaces(config)) {
@@ -2938,6 +2939,7 @@ public abstract class AopProxyUtils {
      * @since 4.2.3
      */
     static Object[] adaptArgumentsIfNecessary(Method method, Object... arguments) {
+        // 校验数组的方法
         if (method.isVarArgs() && !ObjectUtils.isEmpty(arguments)) {
             Class<?>[] paramTypes = method.getParameterTypes();
             if (paramTypes.length == arguments.length) {
@@ -2945,11 +2947,14 @@ public abstract class AopProxyUtils {
                 Class<?> varargType = paramTypes[varargIndex];
                 if (varargType.isArray()) {
                     Object varargArray = arguments[varargIndex];
+                    // 校验类型的两种方法
                     if (varargArray instanceof Object[] && !varargType.isInstance(varargArray)) {
                         Object[] newArguments = new Object[arguments.length];
+                        // 复制数组的标准方法
                         System.arraycopy(arguments, 0, newArguments, 0, varargIndex);
                         Class<?> targetElementType = varargType.getComponentType();
                         int varargLength = Array.getLength(varargArray);
+                        // 生成数组的方法
                         Object newVarargArray = Array.newInstance(targetElementType, varargLength);
                         System.arraycopy(varargArray, 0, newVarargArray, 0, varargLength);
                         newArguments[varargIndex] = newVarargArray;
