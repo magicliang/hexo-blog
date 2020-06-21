@@ -2170,7 +2170,7 @@ public void addAdvice(int pos, Advice advice) throws AopConfigException {
     adviceChanged();
  }
 ```
-上述的Advice都被封装成DefaultPointcutAdvisor，可以看下其构造函数
+上述的Advice都被封装成 DefaultPointcutAdvisor，可以看下其构造函数
 
 ```java
 public DefaultPointcutAdvisor(Advice advice) {
@@ -2190,7 +2190,7 @@ public Object getProxy() {
 }
 ```
 
-这里的createAopProxy()返回的是AopProxy类型，方法是 final，并且加了锁操作。
+这里的createAopProxy()返回的是 AopProxy 类型，方法是 final，并且加了锁操作。
 
 ```java
 protected final synchronized AopProxy createAopProxy() {
