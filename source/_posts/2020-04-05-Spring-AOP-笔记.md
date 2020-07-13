@@ -1804,6 +1804,8 @@ Spring 的 AOP 框架本身是支持类型扩展的，自定义的扩展可以�
 
 # 一般的继承关系
 
+![spring-aop-proxy-creation.png](spring-aop-proxy-creation.png)
+
 spring-aop 模块的 jar 里包含 org.aopalliance.intercept package。
 
 常见的 AOP 实现包括但不仅限于：
