@@ -2970,6 +2970,116 @@ public abstract class AopProxyUtils {
 
 }
 ```
+
+CglibAopProxy 生成代理的流程，使用了 cglib 的 enhancer：
+
+```java
+@Override
+    public Object getProxy(ClassLoader classLoader) {
+        if (logger.isDebugEnabled()) {
+            logger.debug("Creating CGLIB proxy: target source is " + this.advised.getTargetSource());
+        }
+
+        try {
+            Class<?> rootClass = this.advised.getTargetClass();
+            Assert.state(rootClass != null, "Target class must be available for creating a CGLIB proxy");
+
+            Class<?> proxySuperClass = rootClass;
+            if (ClassUtils.isCglibProxyClass(rootClass)) {
+                proxySuperClass = rootClass.getSuperclass();
+                Class<?>[] additionalInterfaces = rootClass.getInterfaces();
+                for (Class<?> additionalInterface : additionalInterfaces) {
+                    this.advised.addInterface(additionalInterface);
+                }
+            }
+
+            // Validate the class, writing log messages as necessary.
+            validateClassIfNecessary(proxySuperClass, classLoader);
+
+            // Configure CGLIB Enhancer...
+            Enhancer enhancer = createEnhancer();
+            if (classLoader != null) {
+                enhancer.setClassLoader(classLoader);
+                if (classLoader instanceof SmartClassLoader &&
+                        ((SmartClassLoader) classLoader).isClassReloadable(proxySuperClass)) {
+                    enhancer.setUseCache(false);
+                }
+            }
+            enhancer.setSuperclass(proxySuperClass);
+            enhancer.setInterfaces(AopProxyUtils.completeProxiedInterfaces(this.advised));
+            enhancer.setNamingPolicy(SpringNamingPolicy.INSTANCE);
+            enhancer.setStrategy(new ClassLoaderAwareUndeclaredThrowableStrategy(classLoader));
+
+            Callback[] callbacks = getCallbacks(rootClass);
+            Class<?>[] types = new Class<?>[callbacks.length];
+            for (int x = 0; x < types.length; x++) {
+                types[x] = callbacks[x].getClass();
+            }
+            // fixedInterceptorMap only populated at this point, after getCallbacks call above
+            enhancer.setCallbackFilter(new ProxyCallbackFilter(
+                    this.advised.getConfigurationOnlyCopy(), this.fixedInterceptorMap, this.fixedInterceptorOffset));
+            enhancer.setCallbackTypes(types);
+
+            // Generate the proxy class and create a proxy instance.
+            return createProxyClassAndInstance(enhancer, callbacks);
+        }
+        catch (CodeGenerationException ex) {
+            throw new AopConfigException("Could not generate CGLIB subclass of class [" +
+                    this.advised.getTargetClass() + "]: " +
+                    "Common causes of this problem include using a final class or a non-visible class",
+                    ex);
+        }
+        catch (IllegalArgumentException ex) {
+            throw new AopConfigException("Could not generate CGLIB subclass of class [" +
+                    this.advised.getTargetClass() + "]: " +
+                    "Common causes of this problem include using a final class or a non-visible class",
+                    ex);
+        }
+        catch (Throwable ex) {
+            // TargetSource.getTarget() failed
+            throw new AopConfigException("Unexpected AOP exception", ex);
+        }
+    }
+```
+
+ObjenesisCglibAopProxy 不需要依赖于构造器，在高版本（ 4.0 以后）Spring 上，是 CglibAopProxy 的替代品，而且不完全调用 super 的函数。
+
+```java
+@Override
+    @SuppressWarnings("unchecked")
+    protected Object createProxyClassAndInstance(Enhancer enhancer, Callback[] callbacks) {
+        Class<?> proxyClass = enhancer.createClass();
+        Object proxyInstance = null;
+
+        if (objenesis.isWorthTrying()) {
+            try {
+                proxyInstance = objenesis.newInstance(proxyClass, enhancer.getUseCache());
+            }
+            catch (Throwable ex) {
+                logger.debug("Unable to instantiate proxy using Objenesis, " +
+                        "falling back to regular proxy construction", ex);
+            }
+        }
+
+        if (proxyInstance == null) {
+            // Regular instantiation via default constructor...
+            try {
+                proxyInstance = (this.constructorArgs != null ?
+                        proxyClass.getConstructor(this.constructorArgTypes).newInstance(this.constructorArgs) :
+                        proxyClass.newInstance());
+            }
+            catch (Throwable ex) {
+                throw new AopConfigException("Unable to instantiate proxy using Objenesis, " +
+                        "and regular proxy instantiation via default constructor fails as well", ex);
+            }
+        }
+
+        ((Factory) proxyInstance).setCallbacks(callbacks);
+        return proxyInstance;
+    }
+```
+
+
 ```java
 ```
 ```java
