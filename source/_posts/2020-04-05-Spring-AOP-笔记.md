@@ -1463,7 +1463,9 @@ public class LockMixinAdvisor extends DefaultIntroductionAdvisor {
 
 ## ProxyFactoryBean
 
-一个 bean 引用一个 ProxyFactoryBean，其实不是引用它的 instance，而是在引用它的 getObject() 产生的对象。ProxyFactoryBean 有一个优点，因为由他搞出来的 advices 和 pointcuts 本身都是 IoC 容器管理的 bean。
+一个 bean 引用一个 ProxyFactoryBean，其实不是引用它的 instance，而是在引用它的 getObject() 产生的对象。ProxyFactoryBean 有一个优点，因为由他搞出来的 advices 和 pointcuts 本身都是 IoC 容器管理的 bean。在大多数情况下，我们可以用 xml 配置相关 bean，但有些时候我们需要动态生成 bean，这时候就可以用到 ProxyFactoryBean 了。
+
+这个类型被 AbstractBeanFactory 使用（另一个被 BeanFactory 经常使用的扩展点是 BeanPostProcessor）。我们的系统中经常出现使用的扩展的其实不是 ProxyFactoryBean，而是 FactoryBean（它的 getObject 接口是 convention over configuration 的典范，总是会被自动调用）。它的用意是“（使用 xml）动态地给现存的 bean 增加切面”。
 
 几个基础属性：
 
@@ -1507,6 +1509,7 @@ public class LockMixinAdvisor extends DefaultIntroductionAdvisor {
 ```
 
 ```java
+// 注意，这里不再需要对 person 进行 getObject，getObject 已经被自动调用了，这里的这个 object 甚至可以是一个 String。
 Person person = (Person) factory.getBean("person");
 ```
 
@@ -1816,9 +1819,9 @@ spring-aop 模块的 jar 里包含 org.aopalliance.intercept package。
  - BCEL(Byte-Code Engineering Library):Java字节码操作类库
  - Javassist：Java字节码操作类库
 
-代表单一方法的一等公民类型 Advice/Interceptor，他们是围绕 joinpoint/invocation 进行操作。
+代表单一方法的一等公民类型 Advice/Interceptor，他们是围绕  joinpoint/invocation 进行操作。
 
-Advice（marker interface，不带有方法） -> Interceptor（marker interface，不带有方法） -> MethodInterceptor（带有一个很重要的`invoke(MethodInvocation invocation)`方法） -> XXXInterceptor（比如 TransactionInterceptor）
+Advice（marker interface，不带有方法） -> Interceptor（marker interface，不带有方法） -> MethodInterceptor（带有一个很重要的`invoke(MethodInvocation invocation)`方法，注意，这里要使用 aop 联盟的方法拦截器，而不能使用 cglib 的方法拦截器） -> XXXInterceptor（比如 TransactionInterceptor）
 
 对于每一个 bean 的 proxy 而言，interceptor 是有 interceptor chain 的。
 
@@ -2321,7 +2324,7 @@ public static ClassLoader getDefaultClassLoader() {
                 // getDecoratedClass() 等价于这个调用，目的都是获取目标类
                 AopProxyUtils.ultimateTargetClass(this.advised);
             }
-            // 如果调用的是 Advised 的派生接口，且本类的 advised作为 proxy config 是不透明的
+            // 如果调用的是 Advised 的派生接口，且本类的 advised作为 proxy config 是不透明的（反射走入拦截器的入口之一，比较少走入），直接对 advised 对象进行反射调用
             else if (!this.advised.opaque && method.getDeclaringClass().isInterface() &&
                     method.getDeclaringClass().isAssignableFrom(Advised.class)) {
                 // 使用反射调用目标方法
@@ -2345,7 +2348,7 @@ public static ClassLoader getDefaultClassLoader() {
                 targetClass = target.getClass();
             }
             
-            // 获取拦截器链
+            // 获取拦截器链。如果进入这个底层方法，可以看出在 Spring 底层，interceptor ==  advisor
             // Get the interception chain for this method.
             List<Object> chain = this.advised.getInterceptorsAndDynamicInterceptionAdvice(method, targetClass);
             
@@ -2362,11 +2365,11 @@ public static ClassLoader getDefaultClassLoader() {
                 retVal = AopUtils.invokeJoinpointUsingReflection(target, method, argsToUse);
             }
             else {
-                // 制造一个方法调用- 即 MethodInvocation
+                // 使用 interceptorchain，制造一个方法调用- 即 MethodInvocation
                 // We need to create a method invocation...
                 invocation = new ReflectiveMethodInvocation(proxy, target, method, args, targetClass, chain);
                 // Proceed to the joinpoint through the interceptor chain.
-                // 对它进行调用
+                // 对它进行调用，这就是大部分的 procced 和 interceptor 之间的入口
                 retVal = invocation.proceed();
             }
             
@@ -2971,7 +2974,10 @@ public abstract class AopProxyUtils {
 }
 ```
 
-CglibAopProxy 生成代理的流程，使用了 cglib 的 enhancer：
+CglibAopProxy 生成代理的流程，使用了 cglib 的 enhancer。
+
+它的 enhancer 注册了很多的 Callback 方法，最重要的方法是 DynamicAdvisedInterceptor，它即是代理实际操作的回调类，回调方法为intercept。
+
 
 ```java
 @Override
@@ -3080,10 +3086,6 @@ ObjenesisCglibAopProxy 不需要依赖于构造器，在高版本（ 4.0 以后�
 ```
 
 
-```java
-```
-```java
-```
 ```java
 ```
 ```java
