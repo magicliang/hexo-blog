@@ -616,7 +616,6 @@ public class MyAspect {
 
 </aop:aspect>
     </aop:config>
-    
     <bean id="aBean" class="...">
 </beans>
 ```
@@ -1463,9 +1462,11 @@ public class LockMixinAdvisor extends DefaultIntroductionAdvisor {
 
 ## ProxyFactoryBean
 
-一个 bean 引用一个 ProxyFactoryBean，其实不是引用它的 instance，而是在引用它的 getObject() 产生的对象。ProxyFactoryBean 有一个优点，因为由他搞出来的 advices 和 pointcuts 本身都是 IoC 容器管理的 bean。在大多数情况下，我们可以用 xml 配置相关 bean，但有些时候我们需要动态生成 bean，这时候就可以用到 ProxyFactoryBean 了。
+**一个 bean 引用一个 ProxyFactoryBean，其实不是引用它的 instance，而是在引用它的 getObject() 产生的对象**（它的 getObject 接口是 convention over configuration 的典范，总是会被自动调用）。ProxyFactoryBean 有一个优点，因为由他搞出来的 advices 和 pointcuts 本身都是 IoC 容器管理的 bean。在大多数情况下，我们可以用 xml 配置相关 bean，但有些时候我们需要动态生成 bean，这时候就可以用到 ProxyFactoryBean 了。
 
-这个类型被 AbstractBeanFactory 使用（另一个被 BeanFactory 经常使用的扩展点是 BeanPostProcessor）。我们的系统中经常出现使用的扩展的其实不是 ProxyFactoryBean，而是 FactoryBean（它的 getObject 接口是 convention over configuration 的典范，总是会被自动调用）。它的用意是“（使用 xml）动态地给现存的 bean 增加切面”。
+Spring 框架里各种 EntityManagerFactory 都是各种 FactoryBean，factory bean 在 ioc 里再谈。
+
+这个类型被 AbstractBeanFactory 使用（另一个被 BeanFactory 经常使用的扩展点是 BeanPostProcessor）。我们的系统中经常出现使用的扩展的其实不是 ProxyFactoryBean，而是 FactoryBean。它的用意是“（使用 xml）动态地给现存的 bean 增加切面”。
 
 几个基础属性：
 
@@ -1826,6 +1827,8 @@ Advice（marker interface，不带有方法） -> Interceptor（marker interface
 对于每一个 bean 的 proxy 而言，interceptor 是有 interceptor chain 的。
 
 ## MethodInvocation
+
+proxy 方法里使用的方法调用抽象，可以 getMethod() 来获取方法。可以被认为是 joinpoint 的 getStaticPart() 的友元实现。
 
 ## JoinPoint 设计
 
