@@ -254,24 +254,6 @@ public interface BeanFactory {
 public abstract class AbstractBeanFactory implements ConfigurableListableBeanFactory {
     private Map<String, Object> singleObjects = new ConcurrentHashMap<String, Object>();
     
-    @Override
-    public Object getBean(String beanName){
-        Object singleBean = this.singleObjects.get(beanName);
-        if(singleBean != null){
-            return singleBean;
-        }
-        
-        BeanDefinition beanDefinition  = getBeanDefinitionByName(beanName);
-        if(beanDefinition==null){
-            throw new RuntimeException("bean for name '"+beanName+"' not register.");
-        }
-        
-        // 从 bean
-        singleBean = doCreateBean(beanDefinition);
-        this.singleObjects.put(beanName, singleBean);
-        return singleBean;
-    }
-    
     protected abstract BeanDefinition getBeanDefinitionByName(String beanName);
     
     // 所有的创建 bean 的方法的入口
@@ -293,7 +275,240 @@ public abstract class AbstractBeanFactory implements ConfigurableListableBeanFac
     } 
     throw new RuntimeException("bean name for " + beanDefinition.getBeanName() + " not define bean class");
 }
+
+    /**
+     * 从 bean definition 里生成 bean，这个方法在 getBean 里才执行，它可以被优化成一个惰性求值的方法
+     * Return an instance, which may be shared or independent, of the specified bean.
+     * @param name the name of the bean to retrieve
+     * @param requiredType the required type of the bean to retrieve
+     * @param args arguments to use when creating a bean instance using explicit arguments
+     * (only applied when creating a new instance as opposed to retrieving an existing one)
+     * @param typeCheckOnly whether the instance is obtained for a type check,
+     * not for actual use
+     * @return an instance of the bean
+     * @throws BeansException if the bean could not be created
+     */
+    @SuppressWarnings("unchecked")
+    protected <T> T doGetBean(final String name, @Nullable final Class<T> requiredType,
+            @Nullable final Object[] args, boolean typeCheckOnly) throws BeansException {
+
+        final String beanName = transformedBeanName(name);
+        Object bean;
+
+        // Eagerly check singleton cache for manually registered singletons.
+        Object sharedInstance = getSingleton(beanName);
+        if (sharedInstance != null && args == null) {
+            if (logger.isTraceEnabled()) {
+                if (isSingletonCurrentlyInCreation(beanName)) {
+                    logger.trace("Returning eagerly cached instance of singleton bean '" + beanName +
+                            "' that is not fully initialized yet - a consequence of a circular reference");
+                }
+                else {
+                    logger.trace("Returning cached instance of singleton bean '" + beanName + "'");
+                }
+            }
+            bean = getObjectForBeanInstance(sharedInstance, name, beanName, null);
+        }
+
+        else {
+            // Fail if we're already creating this bean instance:
+            // We're assumably within a circular reference.
+            if (isPrototypeCurrentlyInCreation(beanName)) {
+                throw new BeanCurrentlyInCreationException(beanName);
+            }
+
+            // Check if bean definition exists in this factory.
+            BeanFactory parentBeanFactory = getParentBeanFactory();
+            if (parentBeanFactory != null && !containsBeanDefinition(beanName)) {
+                // Not found -> check parent.
+                String nameToLookup = originalBeanName(name);
+                if (parentBeanFactory instanceof AbstractBeanFactory) {
+                    return ((AbstractBeanFactory) parentBeanFactory).doGetBean(
+                            nameToLookup, requiredType, args, typeCheckOnly);
+                }
+                else if (args != null) {
+                    // Delegation to parent with explicit args.
+                    return (T) parentBeanFactory.getBean(nameToLookup, args);
+                }
+                else if (requiredType != null) {
+                    // No args -> delegate to standard getBean method.
+                    return parentBeanFactory.getBean(nameToLookup, requiredType);
+                }
+                else {
+                    return (T) parentBeanFactory.getBean(nameToLookup);
+                }
+            }
+
+            if (!typeCheckOnly) {
+                markBeanAsCreated(beanName);
+            }
+
+            try {
+                final RootBeanDefinition mbd = getMergedLocalBeanDefinition(beanName);
+                checkMergedBeanDefinition(mbd, beanName, args);
+
+                // Guarantee initialization of beans that the current bean depends on.
+                String[] dependsOn = mbd.getDependsOn();
+                if (dependsOn != null) {
+                    for (String dep : dependsOn) {
+                        if (isDependent(beanName, dep)) {
+                            throw new BeanCreationException(mbd.getResourceDescription(), beanName,
+                                    "Circular depends-on relationship between '" + beanName + "' and '" + dep + "'");
+                        }
+                        registerDependentBean(dep, beanName);
+                        try {
+                            getBean(dep);
+                        }
+                        catch (NoSuchBeanDefinitionException ex) {
+                            throw new BeanCreationException(mbd.getResourceDescription(), beanName,
+                                    "'" + beanName + "' depends on missing bean '" + dep + "'", ex);
+                        }
+                    }
+                }
+
+                // Create bean instance.
+                if (mbd.isSingleton()) {
+                    sharedInstance = getSingleton(beanName, () -> {
+                        try {
+                            return createBean(beanName, mbd, args);
+                        }
+                        catch (BeansException ex) {
+                            // Explicitly remove instance from singleton cache: It might have been put there
+                            // eagerly by the creation process, to allow for circular reference resolution.
+                            // Also remove any beans that received a temporary reference to the bean.
+                            destroySingleton(beanName);
+                            throw ex;
+                        }
+                    });
+                    bean = getObjectForBeanInstance(sharedInstance, name, beanName, mbd);
+                }
+
+                else if (mbd.isPrototype()) {
+                    // It's a prototype -> create a new instance.
+                    Object prototypeInstance = null;
+                    try {
+                        beforePrototypeCreation(beanName);
+                        prototypeInstance = createBean(beanName, mbd, args);
+                    }
+                    finally {
+                        afterPrototypeCreation(beanName);
+                    }
+                    bean = getObjectForBeanInstance(prototypeInstance, name, beanName, mbd);
+                }
+
+                else {
+                    String scopeName = mbd.getScope();
+                    final Scope scope = this.scopes.get(scopeName);
+                    if (scope == null) {
+                        throw new IllegalStateException("No Scope registered for scope name '" + scopeName + "'");
+                    }
+                    try {
+                        Object scopedInstance = scope.get(beanName, () -> {
+                            beforePrototypeCreation(beanName);
+                            try {
+                                return createBean(beanName, mbd, args);
+                            }
+                            finally {
+                                afterPrototypeCreation(beanName);
+                            }
+                        });
+                        bean = getObjectForBeanInstance(scopedInstance, name, beanName, mbd);
+                    }
+                    catch (IllegalStateException ex) {
+                        throw new BeanCreationException(beanName,
+                                "Scope '" + scopeName + "' is not active for the current thread; consider " +
+                                "defining a scoped proxy for this bean if you intend to refer to it from a singleton",
+                                ex);
+                    }
+                }
+            }
+            catch (BeansException ex) {
+                cleanupAfterBeanCreationFailure(beanName);
+                throw ex;
+            }
+        }
+
+        // Check if required type matches the type of the actual bean instance.
+        if (requiredType != null && !requiredType.isInstance(bean)) {
+            try {
+                T convertedBean = getTypeConverter().convertIfNecessary(bean, requiredType);
+                if (convertedBean == null) {
+                    throw new BeanNotOfRequiredTypeException(name, requiredType, bean.getClass());
+                }
+                return convertedBean;
+            }
+            catch (TypeMismatchException ex) {
+                if (logger.isTraceEnabled()) {
+                    logger.trace("Failed to convert bean '" + name + "' to required type '" +
+                            ClassUtils.getQualifiedName(requiredType) + "'", ex);
+                }
+                throw new BeanNotOfRequiredTypeException(name, requiredType, bean.getClass());
+            }
+        }
+        return (T) bean;
+    }
 }
+```
+
+在 AbstractAutowireCapableBeanFactory 里有 createBean 的一个例子
+```java
+@Override
+    protected Object createBean(String beanName, RootBeanDefinition mbd, @Nullable Object[] args)
+            throws BeanCreationException {
+
+        if (logger.isTraceEnabled()) {
+            logger.trace("Creating instance of bean '" + beanName + "'");
+        }
+        RootBeanDefinition mbdToUse = mbd;
+
+        // Make sure bean class is actually resolved at this point, and
+        // clone the bean definition in case of a dynamically resolved Class
+        // which cannot be stored in the shared merged bean definition.
+        Class<?> resolvedClass = resolveBeanClass(mbd, beanName);
+        if (resolvedClass != null && !mbd.hasBeanClass() && mbd.getBeanClassName() != null) {
+            mbdToUse = new RootBeanDefinition(mbd);
+            mbdToUse.setBeanClass(resolvedClass);
+        }
+
+        // Prepare method overrides.
+        try {
+            mbdToUse.prepareMethodOverrides();
+        }
+        catch (BeanDefinitionValidationException ex) {
+            throw new BeanDefinitionStoreException(mbdToUse.getResourceDescription(),
+                    beanName, "Validation of method overrides failed", ex);
+        }
+
+        try {
+            // 注意，这里可以给 InstantiationAwareBeanPostProcessor 之类的后处理器一个机会，进行实例化的一个拦截
+            // Give BeanPostProcessors a chance to return a proxy instead of the target bean instance.
+            Object bean = resolveBeforeInstantiation(beanName, mbdToUse);
+            if (bean != null) {
+                return bean;
+            }
+        }
+        catch (Throwable ex) {
+            throw new BeanCreationException(mbdToUse.getResourceDescription(), beanName,
+                    "BeanPostProcessor before instantiation of bean failed", ex);
+        }
+
+        try {
+            Object beanInstance = doCreateBean(beanName, mbdToUse, args);
+            if (logger.isTraceEnabled()) {
+                logger.trace("Finished creating instance of bean '" + beanName + "'");
+            }
+            return beanInstance;
+        }
+        catch (BeanCreationException | ImplicitlyAppearedSingletonException ex) {
+            // A previously detected exception with proper bean creation context already,
+            // or illegal singleton state to be communicated up to DefaultSingletonBeanRegistry.
+            throw ex;
+        }
+        catch (Throwable ex) {
+            throw new BeanCreationException(
+                    mbdToUse.getResourceDescription(), beanName, "Unexpected exception during bean creation", ex);
+        }
+    }
 
 ```
 
