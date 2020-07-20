@@ -12,7 +12,7 @@ do
     echo ""
 done
 
-grep -rn --color "\.sankuai\.\|\.meituan\." ./source/_posts
+grep -rn --color "\.sankuai\.\|\.meituan\." ./source/_posts | grep -v "tech.meituan.com"
 
 for i in {1..10}
  do
