@@ -342,3 +342,17 @@ public class NamedThreadLocal<T> extends ThreadLocal<T> {
 }
 ```
 
+# 其他问题
+
+## 如何正确使用 ThreadLocal
+
+ThreadLocal 其实可以当做和 guava cache 一样的缓存，但它最好的用法是做一个 request scope 的缓存，在线程里复用其实极度危险。
+
+当然 guava cache 也有额外的问题。
+
+像 SOFA 里的方案，每个 request 开头 setThreadLocal，执行完以后 clear，是最正确的做法。其他做法，都非常危险，在容器的线程里，维护一个 ThreadLocal 的缓存，很危险。
+
+## weakhashmap 的实用意义
+
+利用下一次操作，来触发 clear，好像有一个线程来维护 map 一样。
+
