@@ -218,6 +218,8 @@ SQL 其实是种声明式查询语言，而 CODASYL 实际上是命令式。
 
 声明式的语言都有一个特性，就是无法/也不需要指定执行的流程的细节，这给了编译器/运行时重排执行流程，甚至并行化执行的机会。-**声明式其实是一种高级抽象，能够实现复杂查询流程的数据库，才能提供很漂亮的声明式查询语言，这体现了架构设计的一种取舍。**
 
+MongoDB 里面的 AST 式的查询语言，本身只是重新发明了一遍 SQL 罢了。
+
 ### web 领域的查询语言
 
 即使只在 Web 领域，CSS 代表的声明式语言，也比 JavaScript 代表的命令式查询要优雅很多。
@@ -247,5 +249,227 @@ MapReduce 实际上是一种偏底层的编程模型，需要执行在计算集�
 图的强大之处在于，它不仅可以存储同构数据，它提供了单个数据存储区中保存完全不同类型对象的一致性方式。
 
 有多种不同但相关的方法可以构建和查询图中的数据，常见的图有属性图（property graph）和三元存储模型（triple-store），相关的查询语言有三种：Cypher、SPARQL 和 Datalog。
+
+图计算模型比关系型数据库或者 CODASYL 更加自由，不需要指定 schema，而任何顶点都可以和其他顶点互联。
+
+### 属性图
+
+在属性图中，每个顶点包括：
+
+ - 唯一的标识符
+ - 出边的集合
+ - 入边的集合
+ - 属性的集合（键-值对）
+ 
+每个边包括：
+ - 唯一的标识符
+ - 边开始的顶点（尾部的顶点）
+ - 边结束的顶点（头部的顶点）
+ - 描述两个顶点间关系类型的标签
+ - 属性的集合（键-值对）
+ 
+把这两种定义转化为 SQL，可以得到两张表：顶点表和边表。
+
+```SQL
+-- 顶点表
+CREATE TABLE `vertices` (
+  `id` bigint NOT NULL AUTO_INCREMENT COMMENT '物理主键',
+  `properties` json DEFAULT NULL COMMENT '顶点属性，适应变化',
+  PRIMARY KEY (`id`)
+) ENGINE=InnoDB AUTO_INCREMENT=1 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- 边表
+CREATE TABLE `edges` (
+  `id` bigint NOT NULL,
+  `tail_vertex` bigint NOT NULL COMMENT '尾顶点',
+  `head_vertex` bigint NOT NULL COMMENT '头顶点',
+  `properties` json DEFAULT NULL COMMENT '属性',
+  `label` varchar(45) NOT NULL COMMENT '关系类型的标签',
+  PRIMARY KEY (`id`),
+  KEY idx_tail_vertex (`tail_vertex`) USING BTREE,
+  UNIQUE KEY idx_vertices (`head_vertex`,`tail_vertex`) USING BTREE
+) ENGINE=InnoDB AUTO_INCREMENT=1 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+```
+
+关于图模型还有一些值得注意的地方：
+
+1. 任何顶点都可以连接到其他顶点。没有模式限制哪种事务可以或者不可以关联。
+2. 给定某个顶点，可以高效地得到它的所有入边和出边，从而遍历图，即沿着这些顶点链条一直向前或者向后。
+3. 通过对不同的类型的关系使用不同的标签，可以在单个图中存储多种不同类型的信息，同时仍然保持整洁的数据类型。-传统的关系模型难以表达不同国家的不同地区结构和颗粒度。
+
+图是易于演化的，可以动态地往图里添加功能，图可以很容易适应并扩展。
+
+图是一种前程远大，应用场景广泛的技术。
+
+### Cypher 查询语言
+
+Neo4j 是从黑客帝国里诞生的概念，Cypher 是另一个（和密码学里的 Cypher 恰巧同名），这两个名词都是从人名里诞生的。
+
+我们可以先创建库和数据：
+
+```SQL
+CREATE 
+(NAmerican: location, {name: 'North America', type: 'continent'}),
+(USA: location, {name:'United States', type:'country'}),
+(Idaho: location, {name:'Idaho', type:'state'}),
+(Lucy: person, {name:'Lucy', type:''}),
+(Idaho) -[:WITHIN] -> (USA) -[:WITHIN] -> (NAmerica),
+(Lucy) - [:BORN_IN] -> (Idaho)
+```
+
+相应的查询语句是这样的：
+
+```SQL
+MATCH
+(person) -[:BORN_IN] -> () - [:WITHIN*o..]-> (us: location, {name:'United States'}),
+(person) -[:LIVES_IN] -> () - [:WITHIN*o..]-> (eu: location, {name:'Europe'}),
+RETURN person.name
+```
+
+这里的式子分两层：第一层在右边，表明这是任意一个处于特定地点的地点，而第二层在左边，表明这是和第一层变量相关联的顶点。person 是一个待求值的变量。
+
+遍历有两种基本思路：
+- 从每个 person 开始，沿着出边过滤。
+- 从 us 和 eu 这两个顶点开始，沿着入边过滤。
+
+使用声明式的查询语句，可以让查询优化器自由地决定执行策略。
+
+同样地，我们可以用关系型数据库来表达图数据库。但通常， SQL 查询要求我们能够制定 join 的次序和数量；对于图查询，join 操作的数量不是预先确定的。这种不能确定 join 顺序和次数的查询，容易诱发 SQL 的反模式。
+
+WITHIN*o.. 的意思是，沿着 WITHIN 边，遍历 0 次或多次。
+
+在 SQL 1999 中，查询这种可变的遍历路径，可以使用被称为**递归公用表表达式**（即 WITH_RECURSIVE 语法）来表示。
+
+```SQL
+-- head vertex 的意思是箭头，这个算法就是递归地从右向左找点（每找到一个点都把点添加进点集合里），而箭头本身带有 withhin 标签。
+-- 这个声明式的算法，可以用类似图算法的方法，命令式地实现
+WITH RECURSIVE
+      -- in_usa 包含所有的美国境内的位置ID
+        in_usa(vertex_id) AS (
+        SELECT vertex_id FROM vertices WHERE properties ->> 'name' = 'United States'
+        UNION
+        SELECT edges.tail_vertex FROM edges
+          JOIN in_usa ON edges.head_vertex = in_usa.vertex_id
+          WHERE edges.label = 'within'
+      ),
+      -- in_europe 包含所有的欧洲境内的位置ID
+        in_europe(vertex_id) AS (
+        SELECT vertex_id FROM vertices WHERE properties ->> 'name' = 'Europe'
+        UNION
+        SELECT edges.tail_vertex FROM edges
+          JOIN in_europe ON edges.head_vertex = in_europe.vertex_id
+          WHERE edges.label = 'within' ),
+      -- born_in_usa 包含了所有类型为Person，且出生在美国的顶点
+        born_in_usa(vertex_id) AS (
+          SELECT edges.tail_vertex FROM edges
+            JOIN in_usa ON edges.head_vertex = in_usa.vertex_id
+            WHERE edges.label = 'born_in' ),
+      -- lives_in_europe 包含了所有类型为Person，且居住在欧洲的顶点。
+        lives_in_europe(vertex_id) AS (
+          SELECT edges.tail_vertex FROM edges
+            JOIN in_europe ON edges.head_vertex = in_europe.vertex_id
+            WHERE edges.label = 'lives_in')
+      SELECT vertices.properties ->> 'name'
+      FROM vertices
+        JOIN born_in_usa ON vertices.vertex_id = born_in_usa.vertex_id
+        JOIN lives_in_europe ON vertices.vertex_id = lives_in_europe.vertex_id;
+```
+
+从这个例子可以看出来，SQL 不如 Cypher，SQL 不具备找到一行记录后自递归的方法。
+
+### 三元存储与 SPARQL
+
+三元存储模型几乎等同于属性图模型，他们只是用不同的名词来描述了相同的思想。
+
+在三元组中，所有信息都以非常简单的三部分形式存储（主语，谓语，客体）。
+
+1. 三元组里主体相当于顶点，谓语和宾语相当于 proerpties 中的 key 和 value。
+2. 三元组中的主体相当于顶点，谓语是途中的边，客体是头部顶点。
+
+#### 语义网
+
+Datomic 是一个三元组存储（其实是五元组，带有 2 元版本数据）。语义网（Semantic Network）不是三元组，语义网本身没有靠谱的实现，从未实际出现。
+
+#### SPARQL
+
+SPARQL（音“sparkle”）出现得比 Cypher 早，Cypher 的模式匹配是借用 SPARQL 的。
+
+#### Datalog 出现得更早
+
+Datalog 出现得更早，为 Cypher 和 SPARQL 奠定了基础。它是 Datomic 的查询语言。Datalog 是 Prolog 的一些子集。
+
+## 小结
+
+数据的模型发展的脉络，不过是：
+
+树型 -> 文档 -> 关系模型 -> 图
+
+关联越多，越适合使用后面的数据库。关系模型的平衡性最好，可以模拟其他数据模型。从这个顺序来讲，文档模型是关系模型在复杂性上的退化/或者简化。但唯有关系模型是强制使用模式的。
+
+如果需求不断变化，模式可能不断变化，应该尽量选择无模式的数据模型。
+
+每种模型都有自己的查询语言和框架。
+
+这些模型在实现的时候，需要做一些权衡取舍。
+
+# 数据存储和检索
+
+从最基本的层面看，数据库只做两件事情：向它插入数据时，它就保存数据；之后查询时，它应该返回那些数据。
+
+作为应用开发人员，我们大多数情况下不可能从头开始实现一个自己的存储引擎，往往需要从现存的存储引擎中选择一个适合自己的。其他针对事务型工作负载和针对分析型工作负载的存储引擎存在很大的差异。
+
+我们将研究关系型数据库和 NoSQL 数据库，我们将研究两个存储引擎家族，即日志结构的存储引擎和面向页的存储引擎，比如 B-Tree（B-Tree 是页的组织）。
+
+## 数据库核心：数据结构
+
+数据存储里通常有三种数据结构：日志、页和索引。
+
+### 日志
+
+许多数据库内部都使用日志，日志是一种只支持追加式更新的数据文件。**一个数据库还要处理其他问题：并发控制、回收磁盘空间、错误处理和部分完成写记录等。**但日志始终是一个很有用的机制，被用在很多地方。
+
+### 索引
+
+在日志里面查找结果是不好的，所以引入第二种数据结构-索引。
+
+索引的基本设计思想是，在原始数据上派生额外数据结构，在索引上保留关键数据或者元数据，作为路标，帮助定位想要的数据。
+
+不同的索引支持不同的搜索方式。
+
+索引必然导致写性能下降，因为索引很难使用追加写，但追加写是性能最高的写入方式。
+
+#### 哈希索引
+
+KV 结构随处可见，是构造更多更复杂索引的基础构造块。如，继承/封装 hashmap 是常见的存储方法。
+
+一个特别简单粗暴的例子：Bitcask 的存储格式，使用 csv 来存储 kv 值，使用 hashmap 来存储 key 和文件系统里的 offset 来充当索引。
+
+我们不能只依赖于一个数据文件，这会导致磁盘空间耗尽-**所以我们对大规模存储应该采取分段的形式。**
+
+但使用多段数据，往往意味着数据需要压缩。压缩可以让段变小，因为段被合并后就不会再被修改，所以很适合放进新文件里。这样可以把旧文件段留出来，提供读写支持。
+
+每个段都有自己的内存哈希表。-这里引出了一个范式，一段数据，到底在内存里是怎么被组织的，在硬盘里又是怎么被组织的，可以完全不一样。
+
+这个方法是最简单的方法。但要在实践中行之有效，还要考虑如下问题：
+
+1. 文件格式：CSV 不是最佳的文件格式，二进制才是。
+2. 删除记录：如果要删除键和值，在日志里追加一个删除日志是简单的做法（墓碑）。墓碑会让记录在被合并时删除键值的实际内容。
+3. 崩溃恢复：从头到尾读取日志是一个方法，快照内存里的 hashmap 是另一个方法-这和 RDB/AOF 的设计思想是很像的，快照可以加速崩溃恢复，快照本身就是 compact 过的值。
+4. 部分写入的记录：文件要加上校验和。
+5. 并发控制：只有一个写线程追加写入（类似 log4j 的设计），多个线程并发读。
+
+为什么要使用追加写，而不是原地更新？这应该是几乎所有的存储使用日志配合数据页的解决方案需要回答的问题。
+
+1. 追加写的顺序写性能好。
+2. 顺序写的并发控制和崩溃恢复会简单得多-只有一个数据文件很难处理脏数据和正确的数据。
+3. 有了文件合并，可以减少数据文件本身的碎片程度-所以数据文件本身还是 要紧凑，不能作为写的中间文件。
+
+内存里的 hash 表有什么缺点？
+
+1. （因为装填因子的存在）内存利用率不高。
+2. 区间查询效率不高。
+
+#### SSTables 和 LSM-Tree
+
 
 
