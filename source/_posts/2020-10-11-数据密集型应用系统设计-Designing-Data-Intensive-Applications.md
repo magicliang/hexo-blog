@@ -625,7 +625,11 @@ prefix 前缀 -> suffix 后缀
 # 常见缩写
 
 biz -> business
+
 res -> resource
+
 qty -> quantity
+
+msg -> message
 
   [1]: https://blog.csdn.net/weixin_44811417/article/details/90748450
