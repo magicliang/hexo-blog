@@ -3,7 +3,7 @@ title: maven-enforcer-plugin 解决包冲突设计方案
 date: 2020-03-11 15:45:23
 tags:
 - Java
-- maven
+- Maven
 ---
 # 执行时机
 
