@@ -2294,6 +2294,7 @@ VSR、paxos、Raft 和 Zab。
 #### Epoch 和 Quorum
 
 目前这些共识协议都 定义了一个形式化的主节点，然后定义了一个时代编号（epoch number），对应于 Paxos 中的 ballot number，VSP 中的 view number，Raft 中的 term number，并且**在每个世代里，主节点是唯一的。** term 是一个全局的 version，和 Lamport 时钟里的版本号类似，但又不太一样。出现 term 的算法，要假定算法要么有全局生成 term 的能力，要么有全局维护 term 递增的机制。
+
 如果主节点失效，节点就开始投票选主节点，选举会赋予一个单调递增的 epoch 号。
 
 如果存在两个互相冲突的主节点，则拥有高 epoch 的主节点会获胜。
@@ -2316,7 +2317,6 @@ consensus 能够解决 cas 问题，则是 linearizability。
 我们的 broadcast 可以采取异步的方式，也可以采取同步的方式（同步的方式可以得到 ballot）。
 
 大多数共识算法不能动态添加或删除节点（参考 ES）。动态选举有些永远都处理不了的 corner case。
-
 
 ### 成员与协调服务
 
