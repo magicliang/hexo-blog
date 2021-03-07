@@ -2312,9 +2312,12 @@ VSR、paxos、Raft 和 Zab。
 
 **consensus = leader election + atomic/total order broadcast**
 
+consensus 能够解决 cas 问题，则是 linearizability。
+
 我们的 broadcast 可以采取异步的方式，也可以采取同步的方式（同步的方式可以得到 ballot）。
 
 大多数共识算法不能动态添加或删除节点（参考 ES）。动态选举有些永远都处理不了的 corner case。
+
 
 ### 成员与协调服务
 
