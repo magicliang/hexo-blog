@@ -2339,6 +2339,6 @@ Zookeeper 可以提供如下特性：
 2. proposer 用 prepare 请求发出一个提案 n 给所有的 acceptor。
 3. acceptor 如果已经 prepare 过了提案版本小于 n 的请求，则把自己得到的最高的(提案版本，v）返回给 proposer，从此不再 accept 版本小于 n 的请求；否则 acceptor 不再响应提案。
 4. proposer 收到了足够多的响应，把最高的 v 加在 n 上，拼出一个 (n, v)的 accept 请求给所有的 acceptor。
-5. 所有的 acceptor 必须
+5. 所有的 acceptor 必须通过广播等机制把这一结果同步到所有的 learner 身上。
 
   [1]: https://www.bookstack.cn/read/ddia/README.md
