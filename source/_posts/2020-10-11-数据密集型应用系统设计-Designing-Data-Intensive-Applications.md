@@ -2354,4 +2354,6 @@ Unix 的哲学很重要：
 
 分布式数据处理的难点在于 join。
 
+在没有背压的时候，内存缓冲区/blockingqueue 可以实现背压。
+
   [1]: https://www.bookstack.cn/read/ddia/README.md
