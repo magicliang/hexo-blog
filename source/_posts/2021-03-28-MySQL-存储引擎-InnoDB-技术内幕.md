@@ -160,4 +160,24 @@ native aio 需要操作系统的支持。
 
 默认的情况下，MySQL 会在关闭和重启时，把脏页刷新回磁盘。所以有时候 MySQL 重启的速度可能非常慢。
 
+# 文件
 
+现在默认的 binlog 格式是 row。
+
+redolog 使用的是 ib_logfile1、ib_logfile2，循环使用。
+
+# 表
+
+tablespace 下分为 段 segment、区 extent 和页 page。
+
+默认的行格式是 compact。
+
+# 锁
+
+注意意向锁之间的兼容性。
+
+# 事务
+
+redo 保证持久性。它的地址空间需要用来重用。
+
+undo 保证原子性和 mvcc。它的地址空间需要被 purge 线程消除。
