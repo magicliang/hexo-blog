@@ -26,7 +26,7 @@ TiSQL 又叫 TiDB Server，基本实现了 parser、optimizer、executor、cache
 blade-root 是一个 pd（placement driver） server 的分布式集群，彼此之间也使用 raft 靠 leader 来维护元数据，元数据是负载均衡至关重要的信息。
 
 - 采用类似于Google F1/Spanner 的分布式KV存储 (即bbb-kv) + 无状态计算节点 (即bbbSQL) 模型；
-- 用户表中每一行数据，对应一个 Data K/V + N个Index K/V，N是二级索引的个数(N>=0)；
+- 用户表中每一行数据，对应一个 Data K/V + N个Index K/V，N是二级索引的个数(N>=0)；这些 kv 是以 map 的形式组成了 sstable，由 Rocksdb 支持（基于谷歌的 LevelDB，由 facebook 出品）。
 - -bbb-kv 以Ranged Partition的方式将整个key空间分为多个Region(Partition/Shard)，每个Region对应一段连续范围的key；
 - 每个Region都有多个副本，副本间通过共识协议 Raft 来达到CAP的平衡；多个 region 组成一个 raft-group。
 - 每个Region的数据，以一棵独立LSM-tree的形式存储；
@@ -299,5 +299,4 @@ Level-0 是个特殊的层，它允许同层的不同文件间key的重叠。所
 > 读写性能不均衡(写比读差很多，网上后数据); 2)
 > 写需要做擦除(擦除的单位远大于磁盘扇区)，本身又是一次写放大；3)写寿命/擦除次数非常有限。事实上，我知道的做SSD
 > 固件的人，基本都是在优化写性能和寿命。
-
 
