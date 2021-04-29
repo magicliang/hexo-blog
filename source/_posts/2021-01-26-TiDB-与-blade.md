@@ -5,6 +5,12 @@ tags:
 - 系统架构
 - 存储
 ---
+# 两种业务场景和相应的架构模式
+
+偏重事务处理（online transactional processin, OLTP）：此类数据库将不同属性连续存储，也即按行存储。按行存储可以使得插入/更新/删除更快，毕竟一条数据的所有属性是连续存储的。这种存储模型也叫做 N-Ary Storage Model (NSM)。
+
+偏重数据分析（online analytical processing, OLAP）：此类数据库将不同数据的同一属性连续存储，也即列存储。这种存储可以使得查询操作只读关心的数据属性，而不是一整条数据，减少浪费；按列储存可以更好地支持复杂查询。这种存储模型也叫做 Decomposition Storage Model (DSM)。
+
 # TiDB 的基础架构
 
 Log-Structured Merge-tree (LSM-tree)是一种存储结构，由于其优越的写性能被很多大型分布式存储系统采用，包括Google 的 BigTable, Amazon的 Dynamo, Apache 的 HBase 和Cassandra等；MongoDB的WiredTiger引擎则支持B-tree 和 LSM-tree 两种模式；TiDB 则使用了著名的RocksDB。
@@ -13,15 +19,22 @@ Balde 2.0 是基于社区TiDB版本，独立重构存储层（改动较大，下
 
 ![tidb-architecture.png](tidb-architecture.png)
 
+TiSQL 又叫 TiDB Server，基本实现了 parser、optimizer、executor、cache，是无状态可以无限扩展。但 TiDB 本身并不是 monolithic deployment 部署的，而是和底层的 tikv 分离部署的-这和 MySQL 的架构不一样。
+
+在最初版本的实现里面，TiSQL 的接口层稳定以后，就能接入 HBase，这点和 Tair 是很像的。
+
+blade-root 是一个 pd（placement driver） server 的分布式集群，彼此之间也使用 raft 靠 leader 来维护元数据，元数据是负载均衡至关重要的信息。
+
 - 采用类似于Google F1/Spanner 的分布式KV存储 (即bbb-kv) + 无状态计算节点 (即bbbSQL) 模型；
 - 用户表中每一行数据，对应一个 Data K/V + N个Index K/V，N是二级索引的个数(N>=0)；
 - -bbb-kv 以Ranged Partition的方式将整个key空间分为多个Region(Partition/Shard)，每个Region对应一段连续范围的key；
-- 每个Region都有多个副本，副本间通过共识协议 Raft 来达到CAP的平衡；
+- 每个Region都有多个副本，副本间通过共识协议 Raft 来达到CAP的平衡；多个 region 组成一个 raft-group。
 - 每个Region的数据，以一棵独立LSM-tree的形式存储；
 - Region在容量超出水位线时，会进行分裂，变成两个独立的Region；
 - bbb-root 管理集群元数据信息，提供Region的路由服务以及全局授时服务；
 - bbb-sql处理SQL解析、优化和执行，将SQL请求转化为一系列的K/V请求，再根据路由信息，发送对应的bbb-kv 节点；
-- 采用悲观锁模型，支持分布式事务，支持Read Committed隔离级别
+- 采用悲观锁模型，支持分布式事务，支持Read Committed隔离级别。
+- 多节点同步都依赖于 Raft，批量事务处理则依赖于谷歌的 Percolator  事务处理模型。
 
 # LSM-tree 和一些典型实现
 
@@ -286,6 +299,5 @@ Level-0 是个特殊的层，它允许同层的不同文件间key的重叠。所
 > 读写性能不均衡(写比读差很多，网上后数据); 2)
 > 写需要做擦除(擦除的单位远大于磁盘扇区)，本身又是一次写放大；3)写寿命/擦除次数非常有限。事实上，我知道的做SSD
 > 固件的人，基本都是在优化写性能和寿命。
-
 
 
