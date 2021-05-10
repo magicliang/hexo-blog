@@ -19,6 +19,6 @@ ES 的架构有优越的地方：
 
 # ES 的索引相关
 
-[ElasticSearch 索引.xmind](ElasticSearch 索引.xmind)
+[ElasticSearch总结.xmind](ElasticSearch总结.xmind)
 
-![ElasticSearch 索引.png](ElasticSearch 索引.png)
+![ElasticSearch总结.png](ElasticSearch总结.png)
