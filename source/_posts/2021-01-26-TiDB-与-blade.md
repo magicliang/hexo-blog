@@ -23,18 +23,20 @@ TiSQL 又叫 TiDB Server，基本实现了 parser、optimizer、executor、cache
 
 在最初版本的实现里面，TiSQL 的接口层稳定以后，就能接入 HBase，这点和 Tair 是很像的。
 
-blade-root 是一个 pd（placement driver） server 的分布式集群，彼此之间也使用 raft 靠 leader 来维护元数据，元数据是负载均衡至关重要的信息。
+bbb-root 是一个 pd（placement driver） server 的分布式集群，彼此之间也使用 raft 靠 leader 来维护元数据，元数据是负载均衡至关重要的信息。
 
 - 采用类似于Google F1/Spanner 的分布式KV存储 (即bbb-kv) + 无状态计算节点 (即bbbSQL) 模型；
-- 用户表中每一行数据，对应一个 Data K/V + N个Index K/V，N是二级索引的个数(N>=0)；这些 kv 是以 map 的形式组成了 sstable，由 Rocksdb 支持（基于谷歌的 LevelDB，由 facebook 出品）。
-- -bbb-kv 以Ranged Partition的方式将整个key空间分为多个Region(Partition/Shard)，每个Region对应一段连续范围的key；
+- 用户表中每一行数据，对应一个 Data K/V（Key:   tablePrefix{TableID}_recordPrefixSep{RowID}
+Value: [col1, col2, col3, col4]） + N个Index K/V（Key: tablePrefix{tableID}_indexPrefixSep{indexID}_indexedColumnsValue Value: RowID），N是二级索引的个数(N>=0)；这些 kv 是以 map 的形式组成了 sstable，由 Rocksdb 支持（基于谷歌的 LevelDB，由 facebook 出品）。
+- -bbb-kv 以Ranged Partition的方式将整个key空间分为多个Region(Partition/Shard)，每个Region对应一段连续范围的key；这点很类似 HBase。
 - 每个Region都有多个副本，副本间通过共识协议 Raft 来达到CAP的平衡；多个 region 组成一个 raft-group。
 - 每个Region的数据，以一棵独立LSM-tree的形式存储；
 - Region在容量超出水位线时，会进行分裂，变成两个独立的Region；
 - bbb-root 管理集群元数据信息，提供Region的路由服务以及全局授时服务；
 - bbb-sql处理SQL解析、优化和执行，将SQL请求转化为一系列的K/V请求，再根据路由信息，发送对应的bbb-kv 节点；
-- 采用悲观锁模型，支持分布式事务，支持Read Committed隔离级别。
+- 提供乐观/悲观锁模型，支持分布式事务，支持Read Committed隔离级别。默认使用乐观事务模型，对于写写冲突，只有事务提交时才检测冲突。支持完整的 ACID 语义（TiKV 是个 Transactional Storage Engine）。
 - 多节点同步都依赖于 Raft，批量事务处理则依赖于谷歌的 Percolator  事务处理模型。
+- tidb 本身不能很好地支持自增主键（这会导致单一的写流量集中到一个节点上），改造的方法是引入唯一索引。
 
 # LSM-tree 和一些典型实现
 
@@ -299,4 +301,5 @@ Level-0 是个特殊的层，它允许同层的不同文件间key的重叠。所
 > 读写性能不均衡(写比读差很多，网上后数据); 2)
 > 写需要做擦除(擦除的单位远大于磁盘扇区)，本身又是一次写放大；3)写寿命/擦除次数非常有限。事实上，我知道的做SSD
 > 固件的人，基本都是在优化写性能和寿命。
+
 
