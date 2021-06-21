@@ -111,6 +111,16 @@ ES 中每个节点自己都能充当其他节点的 proxy，每个节点都可�
 x-pack
 version 机制
 
+# 容量与分片
+
+## 为何分片不宜过大？
+
+1. 增加索引读压力-不利于并行查询。
+2. 不利于集群扩缩容（分片迁移耗费较长时间）
+3. 集群发生故障时，恢复时间较长
+
+类似的问题也会发生在 Redis 之类的架构方案里。
+
   [1]: https://www.elastic.co/guide/cn/elasticsearch/guide/current/_full_text_search.html#_full_text_search
   [2]: https://www.elastic.co/guide/cn/elasticsearch/guide/current/_phrase_search.html
   [3]: https://www.cnblogs.com/yjf512/p/4897294.html
