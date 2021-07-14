@@ -121,6 +121,15 @@ version 机制
 
 类似的问题也会发生在 Redis 之类的架构方案里。
 
+## 解决大分片的方法
+
+1. 索引按月、日进行分割
+2. delete_by_query方法对索引进行缩容
+3. 模板增加主分片数量
+4. 扩容数据节点
+5. 减小单位分片大小
+
+
   [1]: https://www.elastic.co/guide/cn/elasticsearch/guide/current/_full_text_search.html#_full_text_search
   [2]: https://www.elastic.co/guide/cn/elasticsearch/guide/current/_phrase_search.html
   [3]: https://www.cnblogs.com/yjf512/p/4897294.html
